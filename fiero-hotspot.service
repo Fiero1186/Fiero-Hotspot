@@ -1,0 +1,17 @@
+[Unit]
+Description=Fiero Auto Hotspot
+After=network.target NetworkManager.service
+Wants=network.target
+
+[Service]
+Type=simple
+SyslogIdentifier=fiero-hotspot
+StandardOutput=journal
+StandardError=journal
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/local/bin/fiero-hotspot start
+ExecStop=/usr/local/bin/fiero-hotspot stop
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

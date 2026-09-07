@@ -1,0 +1,171 @@
+#!/bin/bash
+set -euo pipefail
+
+CONFIG_FILE="/etc/fiero-hotspot.conf"
+
+# --- Logging Setup ---
+log() {
+    local level="$1"
+    shift
+    if [ "$level" = "ERR" ]; then
+        echo "[$level] $*" >&2
+    else
+        echo "[$level] $*"
+    fi
+}
+
+for cmd in iw pgrep pkill create_ap notify-send; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log "ERR" "Required command not found: $cmd. Run install.sh first."
+        exit 1
+    fi
+done
+
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+else
+    log "ERR" "Config file not found at $CONFIG_FILE. Run install.sh first."
+    exit 1
+fi
+
+if [ -z "${SSID:-}" ] || [ -z "${PASSWORD:-}" ] || [ -z "${INTERFACE:-}" ] || [ -z "${POWER_SUPPLY:-}" ]; then
+    log "ERR" "Config file is missing required values (SSID, PASSWORD, INTERFACE, POWER_SUPPLY)."
+    exit 1
+fi
+
+# --- v0.3 Backward Compatibility Check ---
+if [ -z "$SUPPORTED_CHANNELS" ]; then
+    log "WARN" "SUPPORTED_CHANNELS not found in config. Was install.sh v0.3 run? Using safe defaults."
+    SUPPORTED_CHANNELS="1,2,3,4,5,6,7,8,9,10,11,36,40,44,48"
+fi
+
+notify() {
+    local msg="$1"
+    log "INFO" "UI Notify: $msg"
+    local user
+    local uid
+
+    user=$(loginctl list-sessions --no-legend | awk '{print $3}' | head -n 1) || user=""
+    uid=$(id -u "$user" 2>/dev/null) || uid=""
+
+    if [ -n "$uid" ]; then
+        timeout 5 sudo -u "$user" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+        /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
+    fi
+}
+
+CREATE_AP_PID=""
+
+cleanup() {
+    if [ -n "$CREATE_AP_PID" ]; then
+        kill "$CREATE_AP_PID" 2>/dev/null || true
+    fi
+    pkill -f "create_ap" 2>/dev/null || true
+    create_ap --stop "$INTERFACE" 2>/dev/null || true
+    iw dev ap0 del 2>/dev/null || true
+    iw dev ap1 del 2>/dev/null || true
+    # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
+}
+# trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
+trap cleanup EXIT INT TERM
+
+# --- Precondition Checks (transient states are retried) ---
+ac_online() {
+    [ "$(cat "/sys/class/power_supply/$POWER_SUPPLY/online" 2>/dev/null)" = "1" ]
+}
+
+wifi_up() {
+    [ "$(cat "/sys/class/net/$INTERFACE/operstate" 2>/dev/null)" != "down" ]
+}
+
+wifi_connected() {
+    iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"
+}
+
+detect_channel() {
+    CHANNEL=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
+    [ -n "$CHANNEL" ]
+}
+
+retry_or_abort() {
+    local fn="$1" label="$2"
+    local attempt
+    # ponytail: hardcoded 15x2s window; if NM reconnect ever exceeds it, raise the loop bound
+    for ((attempt = 1; attempt <= 15; attempt++)); do
+        if "$fn"; then
+            return 0
+        fi
+        sleep 2
+    done
+    log "WARN" "$label. Giving up after 15 attempts."
+    return 1
+}
+
+start_hotspot() {
+    log "INFO" "Starting hotspot process..."
+
+    # Validate everything before touching any networking state.
+    if ! retry_or_abort ac_online "Not on AC power"; then
+        notify "Hotspot not started: charger not connected"
+        exit 0
+    fi
+
+    if ! retry_or_abort wifi_up "WiFi is off"; then
+        notify "Hotspot not started: WiFi is off"
+        exit 0
+    fi
+
+    if ! retry_or_abort wifi_connected "WiFi not connected to any network"; then
+        notify "Hotspot not started: not connected to WiFi"
+        exit 0
+    fi
+
+    if ! retry_or_abort detect_channel "Could not detect WiFi channel"; then
+        notify "Hotspot not started: channel detect failed"
+        exit 0
+    fi
+
+    log "INFO" "Detected upstream channel: $CHANNEL"
+
+    if [[ ",$SUPPORTED_CHANNELS," != *",$CHANNEL,"* ]]; then
+        log "ERR" "Channel $CHANNEL is not supported for AP broadcast on this hardware. Aborting."
+        notify "Hotspot not started: Channel $CHANNEL is unsupported"
+        exit 0
+    fi
+
+    log "INFO" "Cleaning up stale create_ap and virtual interfaces..."
+    cleanup
+
+    notify "Starting hotspot on channel $CHANNEL..."
+
+    log "INFO" "Launching create_ap in background..."
+    create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" &
+    CREATE_AP_PID=$!
+
+    sleep 3
+
+    if kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+        log "INFO" "create_ap process is running (pid $CREATE_AP_PID)."
+        notify "Hotspot is live! SSID: $SSID"
+    else
+        log "ERR" "create_ap failed to start or crashed immediately."
+        notify "Hotspot failed to start. Check logs."
+    fi
+
+    # Stay in the foreground so systemd (Type=simple) tracks the real lifetime.
+    wait "$CREATE_AP_PID" || true
+}
+
+stop_hotspot() {
+    log "INFO" "Stopping hotspot..."
+    notify "Hotspot stopped (charger unplugged)"
+    cleanup
+    log "INFO" "Hotspot cleanup complete."
+}
+
+case "${1:-}" in
+    start) start_hotspot ;;
+    stop) stop_hotspot ;;
+    *) start_hotspot ;;
+esac
