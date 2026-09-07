@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -u
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
@@ -33,6 +33,9 @@ if [ -z "${SSID:-}" ] || [ -z "${PASSWORD:-}" ] || [ -z "${INTERFACE:-}" ] || [ 
     exit 1
 fi
 
+exec 9>/run/fiero-hotspot.lock
+flock -n 9 || { log "INFO" "Another instance is running. Exiting."; exit 0; }
+
 # --- v0.3 Backward Compatibility Check ---
 if [ -z "$SUPPORTED_CHANNELS" ]; then
     log "WARN" "SUPPORTED_CHANNELS not found in config. Was install.sh v0.3 run? Using safe defaults."
@@ -45,10 +48,10 @@ notify() {
     local user
     local uid
 
-    user=$(loginctl list-sessions --no-legend | awk '{print $3}' | head -n 1) || user=""
+    user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4=="seat0" && $6=="user"{print $3; exit}') || user=""
     uid=$(id -u "$user" 2>/dev/null) || uid=""
 
-    if [ -n "$uid" ]; then
+    if [ -n "$uid" ] && [ "$uid" -ge 1000 ] && [ -S "/run/user/$uid/bus" ]; then
         timeout 5 sudo -u "$user" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
@@ -58,11 +61,14 @@ notify() {
 CREATE_AP_PID=""
 
 cleanup() {
+    if [ "${SKIP_CLEANUP:-0}" = "1" ]; then
+        return 0
+    fi
+    create_ap --stop "$INTERFACE" 2>/dev/null || true
     if [ -n "$CREATE_AP_PID" ]; then
         kill "$CREATE_AP_PID" 2>/dev/null || true
     fi
     pkill -f "create_ap" 2>/dev/null || true
-    create_ap --stop "$INTERFACE" 2>/dev/null || true
     iw dev ap0 del 2>/dev/null || true
     iw dev ap1 del 2>/dev/null || true
     # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
@@ -103,6 +109,12 @@ retry_or_abort() {
 }
 
 start_hotspot() {
+    if pgrep -x create_ap >/dev/null && iw dev | grep -qE '^\s*Interface ap[0-9]'; then
+        log "INFO" "Hotspot already running. Skipping."
+        SKIP_CLEANUP=1
+        exit 0
+    fi
+
     log "INFO" "Starting hotspot process..."
 
     # Validate everything before touching any networking state.
