@@ -33,9 +33,6 @@ if [ -z "${SSID:-}" ] || [ -z "${PASSWORD:-}" ] || [ -z "${INTERFACE:-}" ] || [ 
     exit 1
 fi
 
-exec 9>/run/fiero-hotspot.lock
-flock -n 9 || { log "INFO" "Another instance is running. Exiting."; exit 0; }
-
 # --- v0.3 Backward Compatibility Check ---
 if [ -z "$SUPPORTED_CHANNELS" ]; then
     log "WARN" "SUPPORTED_CHANNELS not found in config. Was install.sh v0.3 run? Using safe defaults."
@@ -109,6 +106,9 @@ retry_or_abort() {
 }
 
 start_hotspot() {
+    exec 9>/run/fiero-hotspot.lock
+    flock -n 9 || { log "INFO" "Another instance is running. Exiting."; SKIP_CLEANUP=1; exit 0; }
+
     if pgrep -x create_ap >/dev/null && iw dev | grep -qE '^\s*Interface ap[0-9]'; then
         log "INFO" "Hotspot already running. Skipping."
         SKIP_CLEANUP=1
@@ -172,7 +172,6 @@ start_hotspot() {
 stop_hotspot() {
     log "INFO" "Stopping hotspot..."
     notify "Hotspot stopped (charger unplugged)"
-    cleanup
     log "INFO" "Hotspot cleanup complete."
 }
 
