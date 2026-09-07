@@ -72,7 +72,9 @@ cleanup() {
     # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
 }
 # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --- Precondition Checks (transient states are retried) ---
 ac_online() {

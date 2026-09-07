@@ -10,7 +10,7 @@ StandardOutput=journal
 StandardError=journal
 ExecStart=/usr/local/bin/fiero-hotspot start
 ExecStop=/usr/local/bin/fiero-hotspot stop
-TimeoutStopUSec=30s
+TimeoutStopSec=30s
 Restart=no
 
 [Install]
