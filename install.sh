@@ -58,7 +58,7 @@ fi
 # ---------------------------------------------------------
 # 2. INTERFACE & HARDWARE DISCOVERY
 # ---------------------------------------------------------
-INTERFACE=$(iw dev | awk '$1=="Interface"{print $2; exit}')
+INTERFACE=$(iw dev | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')
 if [ -z "$INTERFACE" ]; then
     echo "Could not detect a Wi-Fi interface."
     exit 1
@@ -152,11 +152,23 @@ echo "Config written to $CONFIG_PATH (permissions 600)."
 install -m 755 -o root -g root fiero-hotspot.sh /usr/local/bin/fiero-hotspot
 echo "Installed script to /usr/local/bin/fiero-hotspot (permissions 755)."
 
+install -m 755 -o root -g root fiero-prompt.sh /usr/local/bin/fiero-prompt
+echo "Installed script to /usr/local/bin/fiero-prompt (permissions 755)."
+
 install -m 644 -o root -g root fiero-hotspot.service /etc/systemd/system/fiero-hotspot.service
 echo "Installed systemd unit to /etc/systemd/system/fiero-hotspot.service"
 
 install -m 644 -o root -g root 99-fiero-hotspot.rules /etc/udev/rules.d/99-fiero-hotspot.rules
 echo "Installed udev rule to /etc/udev/rules.d/99-fiero-hotspot.rules"
+
+SUDOERS_FILE="/etc/sudoers.d/fiero-hotspot"
+cat > "$SUDOERS_FILE" <<EOF
+fiero ALL=(root) NOPASSWD: /usr/bin/systemctl start fiero-hotspot.service, /usr/bin/systemctl stop fiero-hotspot.service
+EOF
+chmod 440 "$SUDOERS_FILE"
+chown root:root "$SUDOERS_FILE"
+visudo -cf "$SUDOERS_FILE"
+echo "Installed sudoers drop-in to $SUDOERS_FILE (permissions 440)."
 
 udevadm control --reload-rules
 systemctl daemon-reload
@@ -164,5 +176,6 @@ systemctl enable fiero-hotspot.service
 
 echo
 echo "Installation complete."
-echo "The hotspot will now auto-start when the charger is connected."
+echo "When the charger is connected/disconnected, a desktop prompt will ask"
+echo "whether to start/stop the hotspot (falls back after 10s)."
 echo "You can manually test it with: sudo systemctl start fiero-hotspot.service"

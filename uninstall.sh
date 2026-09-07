@@ -17,6 +17,12 @@ fi
 rm -f /usr/local/bin/fiero-hotspot
 echo "Removed /usr/local/bin/fiero-hotspot"
 
+rm -f /usr/local/bin/fiero-prompt
+echo "Removed /usr/local/bin/fiero-prompt"
+
+rm -f /etc/sudoers.d/fiero-hotspot
+echo "Removed /etc/sudoers.d/fiero-hotspot"
+
 rm -f /etc/fiero-hotspot.conf
 echo "Removed /etc/fiero-hotspot.conf"
 
