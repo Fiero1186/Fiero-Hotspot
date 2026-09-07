@@ -66,8 +66,9 @@ cleanup() {
         kill "$CREATE_AP_PID" 2>/dev/null || true
     fi
     pkill -f "create_ap" 2>/dev/null || true
-    iw dev ap0 del 2>/dev/null || true
-    iw dev ap1 del 2>/dev/null || true
+    for dev in $(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2}'); do
+        iw dev "$dev" del 2>/dev/null || true
+    done
     # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
 }
 # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
@@ -155,18 +156,23 @@ start_hotspot() {
     create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" &
     CREATE_AP_PID=$!
 
-    sleep 3
+    for ((attempt = 1; attempt <= 8; attempt++)); do
+        if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+            break
+        fi
+        if iw dev 2>/dev/null | grep -qE '^\s*Interface ap[0-9]+'; then
+            log "INFO" "create_ap is live (pid $CREATE_AP_PID, AP interface up)."
+            notify "Hotspot is live! SSID: $SSID"
+            wait "$CREATE_AP_PID" || true
+            return 0
+        fi
+        sleep 1
+    done
 
-    if kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-        log "INFO" "create_ap process is running (pid $CREATE_AP_PID)."
-        notify "Hotspot is live! SSID: $SSID"
-    else
-        log "ERR" "create_ap failed to start or crashed immediately."
-        notify "Hotspot failed to start. Check logs."
-    fi
-
-    # Stay in the foreground so systemd (Type=simple) tracks the real lifetime.
-    wait "$CREATE_AP_PID" || true
+    log "ERR" "create_ap failed to start (pid $CREATE_AP_PID, no AP interface within 8s)."
+    notify "Hotspot failed to start. Check logs."
+    cleanup
+    exit 0
 }
 
 stop_hotspot() {
