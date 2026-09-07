@@ -179,7 +179,11 @@ start_hotspot() {
 
 stop_hotspot() {
     log "INFO" "Stopping hotspot..."
-    notify "Hotspot stopped (charger unplugged)"
+    if ac_online; then
+        notify "Hotspot stopped manually"
+    else
+        notify "Hotspot stopped (charger unplugged)"
+    fi
     log "INFO" "Hotspot cleanup complete."
 }
 
