@@ -176,8 +176,8 @@ visudo -cf "$SUDOERS_FILE"
 echo "Installed sudoers drop-in to $SUDOERS_FILE (permissions 440)."
 
 udevadm control --reload-rules
+udevadm trigger --subsystem-match=power_supply --action=change
 systemctl daemon-reload
-systemctl enable fiero-hotspot.service
 
 echo
 echo "Installation complete."

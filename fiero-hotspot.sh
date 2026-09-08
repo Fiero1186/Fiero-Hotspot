@@ -111,7 +111,29 @@ start_hotspot() {
         if iw dev 2>/dev/null | grep -qE '^\s*Interface ap[0-9]+' && pgrep -f "hostapd.*/tmp/create_ap" >/dev/null; then
             log "INFO" "create_ap is live (pid $CREATE_AP_PID, AP interface up)."
             notify "Hotspot is live! SSID: $SSID"
-            wait "$CREATE_AP_PID" || true
+            local drop_counter=0
+            local max_drops=3
+            while true; do
+                if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+                    log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
+                    notify "Hotspot stopped: create_ap process exited"
+                    break
+                fi
+
+                if iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
+                    drop_counter=0
+                else
+                    drop_counter=$((drop_counter + 1))
+                    if [ "$drop_counter" -ge "$max_drops" ]; then
+                        log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
+                        notify "Hotspot stopped: upstream Wi-Fi disconnected"
+                        break
+                    fi
+                fi
+
+                sleep 2
+            done
+            cleanup
             return 0
         fi
         sleep 1
