@@ -85,8 +85,15 @@ if [ "$current_state" = "online" ]; then
 			CURRENT_CHANNEL=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
 		fi
 
-		# Silently exit if channel cannot broadcast AP (e.g. DFS channels 52-144)
-		if [ -z "$CURRENT_CHANNEL" ] || [[ ",$SUPPORTED_CHANNELS," != *",$CURRENT_CHANNEL,"* ]]; then
+		if [ -z "$CURRENT_CHANNEL" ]; then
+			/usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Hotspot not started: not connected to WiFi" \
+				--icon=network-wireless
+			exit 0
+		fi
+
+		if [[ ",$SUPPORTED_CHANNELS," != *",$CURRENT_CHANNEL,"* ]]; then
+			/usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Hotspot not started: Channel $CURRENT_CHANNEL is unsupported" \
+				--icon=network-wireless
 			exit 0
 		fi
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC connected. Start Fiero Hotspot?" \
