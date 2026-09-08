@@ -16,7 +16,7 @@ log() {
 
 notify() {
     local msg="$1"
-    sudo -u fiero DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus" \
+    sudo -u "${TARGET_USER:-fiero}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID:-1000}/bus" \
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
 }
 

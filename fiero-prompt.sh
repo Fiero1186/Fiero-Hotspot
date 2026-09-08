@@ -7,7 +7,7 @@ set -u
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 
 STATE_FILE="/run/user/$(id -u)/fiero-prompt.state"
-COOLDOWN=4
+COOLDOWN=11
 
 ac_online() {
     local supply

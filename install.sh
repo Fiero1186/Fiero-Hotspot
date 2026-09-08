@@ -128,6 +128,8 @@ echo
 # 5. CONFIGURATION & DEPLOYMENT
 # ---------------------------------------------------------
 CONFIG_PATH="/etc/fiero-hotspot.conf"
+TARGET_USER="${SUDO_USER:-$USER}"
+TARGET_UID=$(id -u "$TARGET_USER")
 
 # Single-quote a value so the config can be sourced safely even if it
 # contains quotes, $, backticks, or backslashes (e.g. an SSID like "Bob's 5G").
@@ -143,6 +145,8 @@ PASSWORD=$(shquote "$PASSWORD")
 INTERFACE=$(shquote "$INTERFACE")
 POWER_SUPPLY=$(shquote "$POWER_SUPPLY")
 SUPPORTED_CHANNELS=$(shquote "$SUPPORTED_CHANNELS")
+TARGET_USER=$(shquote "$TARGET_USER")
+TARGET_UID=$(shquote "$TARGET_UID")
 EOF
 
 chmod 600 "$CONFIG_PATH"
@@ -159,11 +163,12 @@ install -m 644 -o root -g root fiero-hotspot.service /etc/systemd/system/fiero-h
 echo "Installed systemd unit to /etc/systemd/system/fiero-hotspot.service"
 
 install -m 644 -o root -g root 99-fiero-hotspot.rules /etc/udev/rules.d/99-fiero-hotspot.rules
+sed -i "s/su - fiero/su - $TARGET_USER/" /etc/udev/rules.d/99-fiero-hotspot.rules
 echo "Installed udev rule to /etc/udev/rules.d/99-fiero-hotspot.rules"
 
 SUDOERS_FILE="/etc/sudoers.d/fiero-hotspot"
 cat > "$SUDOERS_FILE" <<EOF
-fiero ALL=(root) NOPASSWD: /usr/bin/systemctl start fiero-hotspot.service, /usr/bin/systemctl stop fiero-hotspot.service
+$TARGET_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start fiero-hotspot.service, /usr/bin/systemctl stop fiero-hotspot.service
 EOF
 chmod 440 "$SUDOERS_FILE"
 chown root:root "$SUDOERS_FILE"
