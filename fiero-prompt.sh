@@ -1,11 +1,21 @@
 #!/bin/bash
 set -u
 
-# Triggered by udev on AC state changes, run as the desktop user (fiero/uid 1000)
-# via: su - fiero -c /usr/local/bin/fiero-prompt.sh
-# Needs the Wayland session bus to reach the KDE notification daemon.
-export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+# Prevent udev bounce spam with non-blocking lock
+exec 9>/tmp/fiero-prompt.lock
+if ! flock -n 9; then
+    exit 0
+fi
 
+CONFIG_FILE="/etc/fiero-hotspot.conf"
+if [ -r "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
+
+INTERFACE="${INTERFACE:-$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')}"
+SUPPORTED_CHANNELS="${SUPPORTED_CHANNELS:-1,2,3,4,5,6,7,8,9,10,11,36,40,44,48,149,153,157,161,165}"
+
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 STATE_FILE="/run/user/$(id -u)/fiero-prompt.state"
 COOLDOWN=11
 
@@ -60,6 +70,25 @@ fi
 echo "$now:$current_state:$$" > "$STATE_FILE"
 
 if [ "$current_state" = "online" ]; then
+	CURRENT_FREQ=$(iw dev "$INTERFACE" link 2>/dev/null | grep -oE 'freq: [0-9]+' | awk '{print $2}')
+		CURRENT_CHANNEL=""
+		if [ -n "$CURRENT_FREQ" ]; then
+			if [ "$CURRENT_FREQ" -ge 2412 ] && [ "$CURRENT_FREQ" -le 2472 ]; then
+				CURRENT_CHANNEL=$(( (CURRENT_FREQ - 2407) / 5 ))
+			elif [ "$CURRENT_FREQ" -eq 2484 ]; then
+				CURRENT_CHANNEL=14
+			elif [ "$CURRENT_FREQ" -ge 5000 ]; then
+				CURRENT_CHANNEL=$(( (CURRENT_FREQ - 5000) / 5 ))
+			fi
+		fi
+		if [ -z "$CURRENT_CHANNEL" ]; then
+			CURRENT_CHANNEL=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
+		fi
+
+		# Silently exit if channel cannot broadcast AP (e.g. DFS channels 52-144)
+		if [ -z "$CURRENT_CHANNEL" ] || [[ ",$SUPPORTED_CHANNELS," != *",$CURRENT_CHANNEL,"* ]]; then
+			exit 0
+		fi
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC connected. Start Fiero Hotspot?" \
         --icon=network-wireless \
         --expire-time=10000 \

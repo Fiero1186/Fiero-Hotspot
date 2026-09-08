@@ -62,6 +62,7 @@ cleanup() {
         ip link delete "$dev" 2>/dev/null || true
     done
     # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
+    rm -rf /tmp/create_ap* 2>/dev/null || true
 }
 # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
 trap cleanup EXIT
@@ -113,12 +114,17 @@ start_hotspot() {
             notify "Hotspot is live! SSID: $SSID"
             local drop_counter=0
             local max_drops=3
+            rm -f /tmp/fiero-shutting-down.lock
             while true; do
                 if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-                    log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
-                    notify "Hotspot stopped: create_ap process exited"
-                    break
-                fi
+					if [ -f "/tmp/fiero-shutting-down.lock" ]; then
+						rm -f /tmp/fiero-shutting-down.lock
+						break
+					fi
+					log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
+					notify "Hotspot stopped: create_ap process exited"
+					break
+				fi
 
                 if iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
                     drop_counter=0
@@ -145,6 +151,7 @@ start_hotspot() {
 }
 
 stop_hotspot() {
+	touch /tmp/fiero-shutting-down.lock
     log "INFO" "Stopping hotspot..."
     local ac_connected=0
     for supply in /sys/class/power_supply/*; do
