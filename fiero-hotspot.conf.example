@@ -1,0 +1,19 @@
+# /etc/fiero-hotspot.conf
+# Configuration file for Fiero Hotspot daemon
+
+# Wi-Fi Access Point Credentials
+SSID="YOUR_SSID_HERE"
+PASSWORD="YOUR_PASSWORD_HERE"
+
+# Physical wireless interface (check with: ip link or iw dev)
+INTERFACE="wlan0"
+
+# AC power supply device name under /sys/class/power_supply/ (e.g. AC0, AC, ADP1)
+POWER_SUPPLY="AC0"
+
+# Comma-separated list of non-DFS channels supported by your PHY (auto-detected by install.sh)
+SUPPORTED_CHANNELS="1,2,3,4,5,6,7,8,9,10,11,36,40,44,48"
+
+# Target desktop user for D-Bus notification routing
+TARGET_USER="username"
+TARGET_UID="1000"
