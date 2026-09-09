@@ -13,5 +13,11 @@ ExecStop=/usr/local/bin/fiero-hotspot stop
 TimeoutStopSec=30s
 Restart=no
 
+# Hardening
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run /tmp /var/log
+RestrictNamespaces=true
+
 [Install]
 WantedBy=multi-user.target

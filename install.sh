@@ -149,9 +149,9 @@ TARGET_USER=$(shquote "$TARGET_USER")
 TARGET_UID=$(shquote "$TARGET_UID")
 EOF
 
-chmod 600 "$CONFIG_PATH"
-chown root:root "$CONFIG_PATH"
-echo "Config written to $CONFIG_PATH (permissions 600)."
+chown root:"$TARGET_USER" "$CONFIG_PATH"
+chmod 640 "$CONFIG_PATH"
+echo "Config written to $CONFIG_PATH (permissions 640)."
 
 install -m 755 -o root -g root fiero-hotspot.sh /usr/local/bin/fiero-hotspot
 echo "Installed script to /usr/local/bin/fiero-hotspot (permissions 755)."

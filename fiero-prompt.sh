@@ -2,7 +2,8 @@
 set -u
 
 # Prevent udev bounce spam with non-blocking lock
-exec 9>/tmp/fiero-prompt.lock
+USER_LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fiero-prompt.lock"
+exec 9>"$USER_LOCK"
 if ! flock -n 9; then
     exit 0
 fi
@@ -55,7 +56,7 @@ if [ -f "$STATE_FILE" ]; then
     old_state=$(cut -d: -f2 "$STATE_FILE")
     old_pid=$(cut -d: -f3 "$STATE_FILE")
 
-    if [ "$old_state" = "$current_state" ] && [ $((now - old_ts)) -lt $COOLDOWN ]; then
+    if [ "$old_state" = "$current_state" ] && [ $((now - ${old_ts:-0})) -lt $COOLDOWN ]; then
         # Duplicate event within the cooldown window -> debounced.
         exit 0
     fi
@@ -108,7 +109,7 @@ if [ "$current_state" = "online" ]; then
     if [ -z "$result" ] && ! ac_online; then
         exit 0
     fi
-    sudo /usr/bin/systemctl start fiero-hotspot.service
+    sudo -n /usr/bin/systemctl start fiero-hotspot.service
 else
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC disconnected. Stop Fiero Hotspot?" \
         --icon=network-wireless \
@@ -122,5 +123,5 @@ else
     if [ -z "$result" ] && ac_online; then
         exit 0
     fi
-    sudo /usr/bin/systemctl stop fiero-hotspot.service
+    sudo -n /usr/bin/systemctl stop fiero-hotspot.service
 fi

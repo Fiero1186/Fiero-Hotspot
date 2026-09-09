@@ -1,6 +1,8 @@
 #!/bin/bash
 set -u
 
+SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
+
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
 # --- Logging Setup ---
@@ -40,7 +42,7 @@ if [ -z "${SSID:-}" ] || [ -z "${PASSWORD:-}" ] || [ -z "${INTERFACE:-}" ]; then
 fi
 
 # --- v0.3 Backward Compatibility Check ---
-if [ -z "$SUPPORTED_CHANNELS" ]; then
+if [ -z "${SUPPORTED_CHANNELS:-}" ]; then
     log "WARN" "SUPPORTED_CHANNELS not found in config. Was install.sh v0.3 run? Using safe defaults."
     SUPPORTED_CHANNELS="1,2,3,4,5,6,7,8,9,10,11,36,40,44,48"
 fi
@@ -55,14 +57,14 @@ cleanup() {
     if [ -n "$CREATE_AP_PID" ]; then
         kill "$CREATE_AP_PID" 2>/dev/null || true
     fi
-    pkill -f "create_ap" 2>/dev/null || true
+    pkill -f "create_ap.*$INTERFACE" 2>/dev/null || true
     for dev in $(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2}'); do
 		ip link set dev "$dev" down 2>/dev/null || true
         iw dev "$dev" del 2>/dev/null || true
         ip link delete "$dev" 2>/dev/null || true
     done
     # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
-    rm -rf /tmp/create_ap* 2>/dev/null || true
+    find /tmp -maxdepth 1 -name "create_ap*" ! -type l -exec rm -rf {} + 2>/dev/null || true
 }
 # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
 trap cleanup EXIT
@@ -114,11 +116,11 @@ start_hotspot() {
             notify "Hotspot is live! SSID: $SSID"
             local drop_counter=0
             local max_drops=3
-            rm -f /tmp/fiero-shutting-down.lock
+            rm -f "$SHUTDOWN_LOCK"
             while true; do
                 if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-					if [ -f "/tmp/fiero-shutting-down.lock" ]; then
-						rm -f /tmp/fiero-shutting-down.lock
+					if [ -f "$SHUTDOWN_LOCK" ]; then
+						rm -f "$SHUTDOWN_LOCK"
 						break
 					fi
 					log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
@@ -151,7 +153,7 @@ start_hotspot() {
 }
 
 stop_hotspot() {
-	touch /tmp/fiero-shutting-down.lock
+	touch "$SHUTDOWN_LOCK"
     log "INFO" "Stopping hotspot..."
     local ac_connected=0
     for supply in /sys/class/power_supply/*; do
