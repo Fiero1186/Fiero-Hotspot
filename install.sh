@@ -184,3 +184,5 @@ echo "Installation complete."
 echo "When the charger is connected/disconnected, a desktop prompt will ask"
 echo "whether to start/stop the hotspot (falls back after 10s)."
 echo "You can manually test it with: sudo systemctl start fiero-hotspot.service"
+
+# END OF FILE

@@ -21,3 +21,5 @@ RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target
+
+# END OF FILE

@@ -90,12 +90,14 @@ start_hotspot() {
 
     if ! detect_channel; then
         log "ERR" "Could not detect WiFi channel on $INTERFACE. Aborting."
-        exit 1
+        notify "Hotspot could not start: no upstream Wi-Fi detected"
+        exit 0
     fi
 
     if [[ ",$SUPPORTED_CHANNELS," != *",$CHANNEL,"* ]]; then
         log "ERR" "Channel $CHANNEL is not supported for AP broadcast on this hardware. Aborting."
-        exit 1
+        notify "Hotspot could not start: Channel $CHANNEL is unsupported"
+        exit 0
     fi
 
     log "INFO" "Cleaning up stale create_ap and virtual interfaces..."
@@ -176,3 +178,5 @@ case "${1:-}" in
     stop) stop_hotspot ;;
     *) start_hotspot ;;
 esac
+
+# END OF FILE

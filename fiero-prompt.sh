@@ -125,3 +125,5 @@ else
     fi
     sudo -n /usr/bin/systemctl stop fiero-hotspot.service
 fi
+
+# END OF FILE
