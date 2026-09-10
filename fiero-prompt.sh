@@ -15,6 +15,10 @@
 
 set -u
 
+# Static PATH: never resolve binaries from caller-controlled dirs
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
 # Prevent udev bounce spam with non-blocking lock
 USER_LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fiero-prompt.lock"
 exec 9>"$USER_LOCK"
@@ -26,7 +30,7 @@ CONFIG_FILE="/etc/fiero-hotspot.conf"
 if [ -r "$CONFIG_FILE" ]; then
     conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
     conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
-    if [ "$conf_owner" = "root" ] && [ "$conf_perms" = "640" ]; then
+    if [ "$conf_owner" = "root" ] && { [ "$conf_perms" = "640" ] || [ "$conf_perms" = "600" ]; }; then
         source "$CONFIG_FILE"
     fi
 fi
@@ -74,16 +78,19 @@ if [ -f "$STATE_FILE" ]; then
     old_state=$(cut -d: -f2 "$STATE_FILE")
     old_pid=$(cut -d: -f3 "$STATE_FILE")
 
-    if [ "$old_state" = "$current_state" ] && [ $((now - ${old_ts:-0})) -lt $COOLDOWN ]; then
-        # Duplicate event within the cooldown window -> debounced.
-        exit 0
-    fi
-    if [ "$old_state" != "$current_state" ]; then
-        # Power state flipped while a prompt was pending -> kill it and its
-        # notify-send child so the stale fallback never executes.
-        if [ -d "/proc/$old_pid" ] && grep -q "fiero" "/proc/$old_pid/cmdline" 2>/dev/null; then
-            pkill -P "$old_pid" 2>/dev/null || true
-            kill "$old_pid" 2>/dev/null || true
+    # Only trust well-formed numeric fields from the user-writable state file
+    if [[ "${old_pid:-}" =~ ^[0-9]+$ ]] && [[ "${old_ts:-}" =~ ^[0-9]+$ ]]; then
+        if [ "$old_state" = "$current_state" ] && [ $((now - ${old_ts:-0})) -lt $COOLDOWN ]; then
+            # Duplicate event within the cooldown window -> debounced.
+            exit 0
+        fi
+        if [ "$old_state" != "$current_state" ]; then
+            # Power state flipped while a prompt was pending -> kill it and its
+            # notify-send child so the stale fallback never executes.
+            if [ -d "/proc/$old_pid" ] && grep -q "fiero" "/proc/$old_pid/cmdline" 2>/dev/null; then
+                pkill -P "$old_pid" 2>/dev/null || true
+                kill "$old_pid" 2>/dev/null || true
+            fi
         fi
     fi
 fi

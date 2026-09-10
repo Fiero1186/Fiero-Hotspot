@@ -6,6 +6,10 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Secret-bearing files (config with WPA passphrase, sudoers drop-in) must never
+# be world-readable, even for the instant between creation and chmod.
+umask 077
+
 echo "=== Fiero Hotspot Installer ==="
 
 # ---------------------------------------------------------
@@ -157,7 +161,7 @@ shquote() {
     printf "'%s'\n" "$s"
 }
 
-cat > "$CONFIG_PATH" <<EOF
+cat > "${CONFIG_PATH}.tmp.$$" <<EOF
 SSID=$(shquote "$SSID")
 PASSWORD=$(shquote "$PASSWORD")
 INTERFACE=$(shquote "$INTERFACE")
@@ -167,8 +171,9 @@ TARGET_USER=$(shquote "$TARGET_USER")
 TARGET_UID=$(shquote "$TARGET_UID")
 EOF
 
-chown root:"$TARGET_USER" "$CONFIG_PATH"
-chmod 640 "$CONFIG_PATH"
+chown root:"$TARGET_USER" "${CONFIG_PATH}.tmp.$$"
+chmod 640 "${CONFIG_PATH}.tmp.$$"
+mv "${CONFIG_PATH}.tmp.$$" "$CONFIG_PATH"
 echo "Config written to $CONFIG_PATH (permissions 640)."
 
 install -m 755 -o root -g root fiero-hotspot.sh /usr/local/bin/fiero-hotspot

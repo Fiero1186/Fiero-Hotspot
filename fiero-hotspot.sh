@@ -15,6 +15,10 @@
 
 set -u
 
+# Static PATH: root must never resolve binaries from caller-controlled dirs
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
 SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
@@ -50,8 +54,8 @@ done
 if [ -f "$CONFIG_FILE" ]; then
     conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
     conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
-    if [ "$conf_owner" != "root" ] || [ "$conf_perms" != "640" ]; then
-        log "ERR" "Config file $CONFIG_FILE has unsafe permissions ($conf_perms, owner=$conf_owner). Expected 640 root:*. Refusing to source."
+    if [ "$conf_owner" != "root" ] || { [ "$conf_perms" != "640" ] && [ "$conf_perms" != "600" ]; }; then
+        log "ERR" "Config file $CONFIG_FILE has unsafe permissions ($conf_perms, owner=$conf_owner). Expected 600 or 640 root:*. Refusing to source."
         exit 1
     fi
     source "$CONFIG_FILE"
@@ -90,7 +94,7 @@ cleanup() {
         ip link delete "$dev" 2>/dev/null || true
     done
     # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
-    find /tmp -maxdepth 1 -name "create_ap*" ! -type l -exec rm -rf {} + 2>/dev/null || true
+    find /tmp -maxdepth 1 -name "create_ap*" -uid 0 ! -type l -exec rm -rf {} + 2>/dev/null || true
 }
 # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
 trap cleanup EXIT
