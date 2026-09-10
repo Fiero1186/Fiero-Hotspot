@@ -15,7 +15,7 @@ TimeoutStopSec=30s
 Restart=no
 
 # Hardening
-ProtectHome=true
+ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=/run /var/log
 RestrictNamespaces=true

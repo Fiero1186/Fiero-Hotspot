@@ -40,7 +40,7 @@ notify() {
         echo "[ERR] /etc/fiero-hotspot.conf is missing TARGET_USER or TARGET_UID." >&2
         exit 1
     fi
-    sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
+    sudo -u "$TARGET_USER" env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
 }
 

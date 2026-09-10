@@ -111,7 +111,7 @@ The installer:
 2. Detects the Wi-Fi interface and AC power supply via `/sys/class/power_supply/`
 3. Parses supported channels from `iw phy <phyN> info`, excluding restricted frequencies
 4. Prompts for SSID and password (min 8 chars, WPA2 requirement)
-5. Writes configuration to `/etc/fiero-hotspot.conf` (mode `640`, owned `root:<user>`)
+5. Writes configuration to `/etc/fiero-hotspot.conf` (mode `640`, owned `root:<user>`; the runtime validators also accept mode `600`)
 6. Installs binaries to `/usr/local/bin/fiero-hotspot` and `/usr/local/bin/fiero-prompt`
 7. Installs the systemd unit to `/etc/systemd/system/fiero-hotspot.service`
 8. Installs the udev rule to `/etc/udev/rules.d/99-fiero-hotspot.rules`
@@ -278,7 +278,7 @@ The implementation was vibe-coded using local LLMs via OpenCode/DeepSeek, under 
 - **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 57-pass bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
-- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`).
+- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.
 Clean environment testing
 - **Live USB Boot testing:** Tested in a live boot environment (Arch-Based Garuda Linux iso)
 
