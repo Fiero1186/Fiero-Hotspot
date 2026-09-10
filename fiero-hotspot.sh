@@ -48,6 +48,12 @@ for cmd in iw pgrep pkill create_ap nmcli; do
 done
 
 if [ -f "$CONFIG_FILE" ]; then
+    conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
+    conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
+    if [ "$conf_owner" != "root" ] || [ "$conf_perms" != "640" ]; then
+        log "ERR" "Config file $CONFIG_FILE has unsafe permissions ($conf_perms, owner=$conf_owner). Expected 640 root:*. Refusing to source."
+        exit 1
+    fi
     source "$CONFIG_FILE"
 else
     log "ERR" "Config file not found at $CONFIG_FILE. Run install.sh first."
@@ -75,7 +81,9 @@ cleanup() {
     if [ -n "$CREATE_AP_PID" ]; then
         kill "$CREATE_AP_PID" 2>/dev/null || true
     fi
-    pkill -f "create_ap.*$INTERFACE" 2>/dev/null || true
+    local escaped_if
+    escaped_if=$(printf '%s' "$INTERFACE" | sed 's/[.[\*^$()+?{|]/\\&/g')
+    pkill -f "create_ap.*$escaped_if" 2>/dev/null || true
     for dev in $(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2}'); do
 		ip link set dev "$dev" down 2>/dev/null || true
         iw dev "$dev" del 2>/dev/null || true

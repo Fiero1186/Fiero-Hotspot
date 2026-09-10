@@ -104,6 +104,19 @@ fi
 echo ""
 read -rp "Enter SSID for the hotspot: " SSID
 
+if [ -z "$SSID" ]; then
+    echo "Error: SSID cannot be empty."
+    exit 1
+fi
+if [ "${#SSID}" -gt 32 ]; then
+    echo "Error: SSID must be 32 characters or fewer (802.11 limit)."
+    exit 1
+fi
+if printf '%s' "$SSID" | grep -qP '[^\x20-\x7E]'; then
+    echo "Error: SSID contains non-printable characters."
+    exit 1
+fi
+
 while true; do
     read -rsp "Enter password for the hotspot (min 8 chars): " PASSWORD
     echo
@@ -117,6 +130,11 @@ while true; do
 
     if [ "${#PASSWORD}" -lt 8 ]; then
         echo "Error: Password must be at least 8 characters long (WPA2 requirement). Please try again."
+        continue
+    fi
+
+    if [ "${#PASSWORD}" -gt 63 ]; then
+        echo "Error: Password must be 63 characters or fewer (WPA2 limit). Please try again."
         continue
     fi
 
@@ -163,7 +181,8 @@ install -m 644 -o root -g root fiero-hotspot.service /etc/systemd/system/fiero-h
 echo "Installed systemd unit to /etc/systemd/system/fiero-hotspot.service"
 
 install -m 644 -o root -g root 99-fiero-hotspot.rules /etc/udev/rules.d/99-fiero-hotspot.rules
-sed -i "s/@TARGET_USER@/$TARGET_USER/g" /etc/udev/rules.d/99-fiero-hotspot.rules
+escaped_target=$(printf '%s' "$TARGET_USER" | sed 's/[&/\]/\\&/g')
+sed -i "s/@TARGET_USER@/${escaped_target}/g" /etc/udev/rules.d/99-fiero-hotspot.rules
 echo "Installed udev rule to /etc/udev/rules.d/99-fiero-hotspot.rules"
 
 SUDOERS_FILE="/etc/sudoers.d/fiero-hotspot"

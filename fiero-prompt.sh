@@ -24,7 +24,11 @@ fi
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 if [ -r "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
+    conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
+    conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
+    if [ "$conf_owner" = "root" ] && [ "$conf_perms" = "640" ]; then
+        source "$CONFIG_FILE"
+    fi
 fi
 
 INTERFACE="${INTERFACE:-$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')}"
@@ -77,8 +81,10 @@ if [ -f "$STATE_FILE" ]; then
     if [ "$old_state" != "$current_state" ]; then
         # Power state flipped while a prompt was pending -> kill it and its
         # notify-send child so the stale fallback never executes.
-        pkill -P "$old_pid" 2>/dev/null || true
-        kill "$old_pid" 2>/dev/null || true
+        if [ -d "/proc/$old_pid" ] && grep -q "fiero" "/proc/$old_pid/cmdline" 2>/dev/null; then
+            pkill -P "$old_pid" 2>/dev/null || true
+            kill "$old_pid" 2>/dev/null || true
+        fi
     fi
 fi
 
