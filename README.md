@@ -19,8 +19,6 @@ sudo ./install.sh
 
 ## Dependencies
 
-## Dependencies
-
 | Utility | Purpose |
 |---------|---------|
 | `create_ap` | AP creation and lifecycle management |
@@ -34,7 +32,7 @@ sudo ./install.sh
 | `hostapd` | 802.11 AP daemon (managed by `create_ap`) |
 | `dnsmasq` | DHCP/DNS server (managed by `create_ap`) |
 
-> **Building `create_ap` from source:** On Debian, Ubuntu, and Fedora, the upstream `create_ap` package is no longer maintained in distribution repositories. You must build from source using [evilsocket/creaap](https://github.com/evilsocket/create_ap) or use the [lakinduakash/linux-wifi-hotspot](https://github.com/lakinduakash/linux-wifi-hotspot) fork. Arch Linux users can install `create_ap` directly from the AUR.
+> **Building `create_ap` from source:** On Debian, Ubuntu, and Fedora, the upstream `create_ap` package is no longer maintained in distribution repositories. You must build from source using [oblique/create_ap](https://github.com/oblique/create_ap) or use the [lakinduakash/linux-wifi-hotspot](https://github.com/lakinduakash/linux-wifi-hotspot) fork. Arch Linux users can install `create_ap` directly from the AUR.
 
 ## Hardware Requirements
 
