@@ -1,3 +1,4 @@
-ACTION=="change", SUBSYSTEM=="power_supply", ATTR{type}=="Mains", ATTR{online}=="1", RUN+="/usr/bin/su - fiero -c /usr/local/bin/fiero-prompt"
-ACTION=="change", SUBSYSTEM=="power_supply", ATTR{type}=="Mains", ATTR{online}=="0", RUN+="/usr/bin/su - fiero -c /usr/local/bin/fiero-prompt"
+# NOTE: @TARGET_USER@ is dynamically replaced by install.sh during installation.
+ACTION=="change", SUBSYSTEM=="power_supply", ATTR{type}=="Mains", ATTR{online}=="1", RUN+="/usr/bin/su - @TARGET_USER@ -c /usr/local/bin/fiero-prompt"
+ACTION=="change", SUBSYSTEM=="power_supply", ATTR{type}=="Mains", ATTR{online}=="0", RUN+="/usr/bin/su - @TARGET_USER@ -c /usr/local/bin/fiero-prompt"
 # END OF FILE

@@ -5,6 +5,7 @@ Wants=network.target
 
 [Service]
 Type=simple
+PrivateTmp=true
 SyslogIdentifier=fiero-hotspot
 StandardOutput=journal
 StandardError=journal
@@ -16,7 +17,7 @@ Restart=no
 # Hardening
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/run /tmp /var/log
+ReadWritePaths=/run /var/log
 RestrictNamespaces=true
 
 [Install]
