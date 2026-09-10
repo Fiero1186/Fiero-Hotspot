@@ -11,7 +11,7 @@ echo "=== Fiero Hotspot Installer ==="
 # ---------------------------------------------------------
 # 1. DEPENDENCY AUDIT (Distro-Aware)
 # ---------------------------------------------------------
-REQUIRED_CMDS=("create_ap" "hostapd" "dnsmasq" "iw" "iptables" "notify-send" "pgrep")
+REQUIRED_CMDS=("create_ap" "hostapd" "dnsmasq" "iw" "iptables" "notify-send" "pgrep" "nmcli")
 MISSING_CMDS=()
 
 for cmd in "${REQUIRED_CMDS[@]}"; do
@@ -163,7 +163,7 @@ install -m 644 -o root -g root fiero-hotspot.service /etc/systemd/system/fiero-h
 echo "Installed systemd unit to /etc/systemd/system/fiero-hotspot.service"
 
 install -m 644 -o root -g root 99-fiero-hotspot.rules /etc/udev/rules.d/99-fiero-hotspot.rules
-sed -i "s/su - fiero/su - $TARGET_USER/" /etc/udev/rules.d/99-fiero-hotspot.rules
+sed -i "s/@TARGET_USER@/$TARGET_USER/g" /etc/udev/rules.d/99-fiero-hotspot.rules
 echo "Installed udev rule to /etc/udev/rules.d/99-fiero-hotspot.rules"
 
 SUDOERS_FILE="/etc/sudoers.d/fiero-hotspot"

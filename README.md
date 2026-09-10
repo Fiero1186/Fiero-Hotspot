@@ -5,7 +5,19 @@
 
 ## Overview
 
-Fiero Hotspot is an automated bash Wi-Fi repeater daemon for Linux. It bridges an upstream Wi-Fi connection into a shared AP using `create_ap`, orchestrated by udev power-supply events and systemd unit isolation. Concurrency is enforced via `flock` to prevent duplicate instances, and SIGTERM/EXIT traps guarantee clean child-process teardown of `hostapd` and `dnsmasq`.
+Fiero Hotspot is an automated bash Wi-Fi repeater daemon for Linux. It shares an upstream Wi-Fi connection via NAT into a local AP using `create_ap`, orchestrated by udev power-supply events and systemd unit isolation. Concurrency is enforced via `flock` to prevent duplicate instances, and SIGTERM/EXIT traps guarantee clean child-process teardown of `hostapd` and `dnsmasq`.
+
+## Quick Start
+
+```bash
+git clone https://github.com/Fiero1186/Fiero-Hotspot.git
+cd Fiero-Hotspot
+sudo ./install.sh
+```
+
+> **Note:** An active graphical desktop session with a running notification daemon is required for the interactive D-Bus prompts.
+
+## Dependencies
 
 ## Dependencies
 
@@ -15,12 +27,14 @@ Fiero Hotspot is an automated bash Wi-Fi repeater daemon for Linux. It bridges a
 | `iw` | Wi-Fi interface enumeration and channel detection |
 | `util-linux` | `flock(1)` for instance-level locking |
 | `systemd` | Unit management (`fiero-hotspot.service`) |
-| `NetworkManager` | Upstream Wi-Fi association |
+| `NetworkManager` | Upstream Wi-Fi association and `nmcli` utilities |
 | `libnotify` | Desktop notifications via `notify-send` |
 | `procps-ng` | `pgrep`/`pkill` for process management |
 | `iptables` | NAT/firewall rules (required by `create_ap`) |
 | `hostapd` | 802.11 AP daemon (managed by `create_ap`) |
 | `dnsmasq` | DHCP/DNS server (managed by `create_ap`) |
+
+> **Building `create_ap` from source:** On Debian, Ubuntu, and Fedora, the upstream `create_ap` package is no longer maintained in distribution repositories. You must build from source using [evilsocket/creaap](https://github.com/evilsocket/create_ap) or use the [lakinduakash/linux-wifi-hotspot](https://github.com/lakinduakash/linux-wifi-hotspot) fork. Arch Linux users can install `create_ap` directly from the AUR.
 
 ## Hardware Requirements
 
@@ -45,6 +59,12 @@ If the only combinations show `#{ managed } <= 1, #{ monitor } <= 1`, the adapte
 ### Channel Constraints
 
 AP channel is inherited from the upstream connection's current channel at startup. The daemon validates the channel against `SUPPORTED_CHANNELS` (parsed from `iw phy` output). Restricted channels — those flagged as `disabled`, `no IR`, or `radar detection` — are excluded. Channels in non-DFS bands (2.4 GHz: 1-14, 5 GHz UNII-1: 36-48) are safest. DFS bands (52-144) may fail if the adapter enforces radar-detection requirements on the virtual AP interface.
+
+### Runtime Environment
+
+An active X11 or Wayland desktop session with a running notification daemon is required for the interactive D-Bus prompts (D-Bus session bus at `/run/user/<uid>/bus`). Without a desktop session, the installer and hotspot will still function, but the interactive action prompts (Start/Ignore/Keep Running) will not appear.
+
+The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses `nmcli` to query connection state and relies on NetworkManager's D-Bus interface for upstream association tracking.
 
 ## System Architecture
 
@@ -107,7 +127,7 @@ File: `/etc/fiero-hotspot.conf`
 | Variable | Description |
 |----------|-------------|
 | `SSID` | Hotspot network name |
-| `PASSWORD` | WPA2 passphrase (min 8 chars) |
+| `PASSWORD` | WPA2 passphrase, 8–63 characters (WPA2-Personal standard) |
 | `INTERFACE` | Physical Wi-Fi interface (e.g. `wlan0`) |
 | `POWER_SUPPLY` | AC power supply name from `/sys/class/power_supply/` |
 | `SUPPORTED_CHANNELS` | Comma-separated channel whitelist (auto-detected at install) |
@@ -195,6 +215,44 @@ summary.txt
 ```
 
 Exit code `0` = all tests passed. Exit code `1` = hard failure (orphan leak, interface leak, dmesg crash, edge-case failure, or lifecycle timeout).
+
+### Reporting Issues
+
+When filing a bug report, please include the following diagnostic artifacts:
+
+```bash
+sudo ./test_harness.sh 2>&1 | tee summary.txt
+lspci | grep -i network > lspci.txt
+iw list > iw_list.txt
+```
+
+Attach `summary.txt`, `lspci.txt`, and `iw_list.txt` along with your `/etc/fiero-hotspot.conf` (redact the passphrase) and the output of `journalctl -u fiero-hotspot.service -b --no-pager`.
+
+## Known Limitations
+
+### Runtime Credential Visibility (Process Table)
+
+`create_ap` accepts the WPA2 passphrase as a command-line argument. On standard multi-user systems (without `procfs` mounted with `hidepid=2`), the cleartext passphrase is visible in the process table (`ps aux` / `/proc/$PID/cmdline`) to any unprivileged local user while the hotspot is active. For environments where this is a concern, mount `/proc` with `hidepid=2` and grant access only to specific UIDs.
+
+### Single-Radio Throughput Penalty
+
+The upstream client and AP share the same physical radio. On a single-radio adapter, the theoretical throughput drops by approximately 50% due to half-duplex operation — the radio must time-slice between receiving upstream data and transmitting to AP clients.
+
+### Single-Channel Lock
+
+The AP channel is inherited from the upstream connection's current channel and cannot be changed independently (`#channels <= 1` constraint). Cross-band repeating (e.g., receiving on 5 GHz and broadcasting on 2.4 GHz) is not supported.
+
+### DFS & NO-IR Channel Safety
+
+Channels flagged as DFS (52–144) or NO-IR by the regulatory domain are excluded from the supported channel list. If the upstream connection is on such a channel, the hotspot will refuse to start.
+
+### NAT Routing vs. Layer-2 Broadcast Discovery
+
+The daemon operates at Layer-3 via NAT. mDNS, AirPlay, and other Layer-2 broadcast discovery protocols will not traverse the upstream–AP boundary. Devices on the AP cannot discover services on the upstream network, and vice versa.
+
+### System Stack Coupling
+
+The daemon is tightly coupled to `systemd` (service unit), `udev` (power-supply events), and `NetworkManager` (upstream connection management). Running on systems without these components (e.g., OpenRC, runit, ConnMan) is not supported without significant modification.
 
 ## Developer Notes
 

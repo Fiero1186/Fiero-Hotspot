@@ -1,4 +1,18 @@
 #!/bin/bash
+#
+# Fiero Hotspot - Automated Wi-Fi repeater daemon for Linux
+# Copyright (C) 2026 Fiero
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+
 set -u
 
 SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
@@ -18,11 +32,15 @@ log() {
 
 notify() {
     local msg="$1"
-    sudo -u "${TARGET_USER:-fiero}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID:-1000}/bus" \
+    if [ -z "${TARGET_USER:-}" ] || [ -z "${TARGET_UID:-}" ]; then
+        echo "[ERR] /etc/fiero-hotspot.conf is missing TARGET_USER or TARGET_UID." >&2
+        exit 1
+    fi
+    sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
 }
 
-for cmd in iw pgrep pkill create_ap; do
+for cmd in iw pgrep pkill create_ap nmcli; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         log "ERR" "Required command not found: $cmd. Run install.sh first."
         exit 1
