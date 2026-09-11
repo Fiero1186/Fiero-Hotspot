@@ -64,6 +64,16 @@ An active X11 or Wayland desktop session with a running notification daemon is r
 
 The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses `nmcli` to query connection state and relies on NetworkManager's D-Bus interface for upstream association tracking.
 
+## Tested Hardware
+
+| Property | Detail |
+|----------|--------|
+| **Host Platform** | ASUS Vivobook 16 (`X1605ZA_X1605ZAC`) |
+| **Wireless Chipset** | Intel Dual Band Wireless-AC 9560 160MHz (Jefferson Peak) `[8086:51f0]`, Subsystem `[8086:0034]` |
+| **Driver & Subsystem** | `iwlwifi` (`mac80211` / `nl80211`) |
+| **Operating System & Kernel** | Garuda Linux (Arch-based), Linux `7.2.4-zen2-1-zen` |
+| **Hardware Concurrency** | Verified 1× Managed (station) + 1× AP simultaneous operation on matching channels (`#channels <= 1`) |
+
 ## System Architecture
 
 ### Lifecycle
@@ -251,6 +261,10 @@ The daemon operates at Layer-3 via NAT. mDNS, AirPlay, and other Layer-2 broadca
 ### System Stack Coupling
 
 The daemon is tightly coupled to `systemd` (service unit), `udev` (power-supply events), and `NetworkManager` (upstream connection management). Running on systems without these components (e.g., OpenRC, runit, ConnMan) is not supported without significant modification.
+
+### Bare-Metal Only (No Virtual Machine Support)
+
+Requires a physical wireless adapter exposing an `nl80211` interface capable of simultaneous AP and Station modes. Standard virtual machine hypervisors (VirtualBox, VMware, QEMU/KVM) emulate virtualized Ethernet adapters (`virtio`, `e1000`) and cannot create `mac80211` virtual access points. Running inside a VM will fail unless the physical PCIe or USB Wi-Fi card is passed through directly to the guest.
 
 ## Developer Notes
 
