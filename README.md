@@ -334,7 +334,6 @@ The implementation was vibe-coded using LLMs via OpenCode, under strict systems 
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
 - **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.
-Clean environment testing
 - **Live USB Boot testing:** Tested in a live boot environment (Arch-Based Garuda Linux iso)
 
 AI handled the rapid boilerplate; strict verification and POSIX compliance rules kept the codebase production-grade. But the idea was fully mine.

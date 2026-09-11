@@ -867,7 +867,8 @@ fi
 
 # 9b-new. version subcommand and aliases
 set +e
-VER_LONG=$("$SCRIPT_UNDER_TEST" version 2>&1)
+EXPECTED_VERSION="$("$SCRIPT_UNDER_TEST" version 2>/dev/null)"
+VER_LONG="$("$SCRIPT_UNDER_TEST" version 2>&1)"
 VER_LONG_RC=$?
 VER_SHORT=$("$SCRIPT_UNDER_TEST" -v 2>&1)
 VER_SHORT_RC=$?
@@ -880,7 +881,7 @@ if [[ "$VER_LONG_RC" -eq 0 ]]; then
 else
   edge_result "Phase 9b.8: 'version' -> exit 0" FAIL
 fi
-if [[ "$VER_LONG" == "fiero-hotspot v1.1.1" ]]; then
+if [[ "$VER_LONG" == "$EXPECTED_VERSION" ]]; then
   edge_result "Phase 9b.9: 'version' -> correct output" PASS
 else
   edge_result "Phase 9b.9: 'version' -> correct output" FAIL
@@ -890,7 +891,7 @@ if [[ "$VER_SHORT_RC" -eq 0 ]]; then
 else
   edge_result "Phase 9b.10: '-v' flag -> exit 0" FAIL
 fi
-if [[ "$VER_SHORT" == "fiero-hotspot v1.1.1" ]]; then
+if [[ "$VER_SHORT" == "$EXPECTED_VERSION" ]]; then
   edge_result "Phase 9b.11: '-v' flag -> correct output" PASS
 else
   edge_result "Phase 9b.11: '-v' flag -> correct output" FAIL
@@ -900,7 +901,7 @@ if [[ "$VER_DASH_RC" -eq 0 ]]; then
 else
   edge_result "Phase 9b.12: '--version' flag -> exit 0" FAIL
 fi
-if [[ "$VER_DASH" == "fiero-hotspot v1.1.1" ]]; then
+if [[ "$VER_DASH" == "$EXPECTED_VERSION" ]]; then
   edge_result "Phase 9b.13: '--version' flag -> correct output" PASS
 else
   edge_result "Phase 9b.13: '--version' flag -> correct output" FAIL

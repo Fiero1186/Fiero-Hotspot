@@ -39,8 +39,8 @@ log() {
 notify() {
     local msg="$1"
     if [ -z "${TARGET_USER:-}" ] || [ -z "${TARGET_UID:-}" ]; then
-        echo "[ERR] /etc/fiero-hotspot.conf is missing TARGET_USER or TARGET_UID." >&2
-        exit 1
+        log "WARN" "TARGET_USER/TARGET_UID not set; skipping desktop notification."
+        return 0
     fi
     sudo -u "$TARGET_USER" env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
@@ -350,6 +350,7 @@ case "${1:-}" in
             else
                 echo "AUTO_PROMPT='${val}'" >> "$cfg"
             fi
+            chmod 640 "$cfg" 2>/dev/null || true
         }
         case "${2:-}" in
             auto|enable|on)
