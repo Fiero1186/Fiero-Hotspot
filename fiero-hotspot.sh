@@ -75,6 +75,22 @@ if [ -z "${SUPPORTED_CHANNELS:-}" ]; then
     SUPPORTED_CHANNELS="1,2,3,4,5,6,7,8,9,10,11,36,40,44,48"
 fi
 
+ac_online() {
+    if [ -n "${POWER_SUPPLY:-}" ] \
+        && [ -f "/sys/class/power_supply/$POWER_SUPPLY/online" ] \
+        && [ "$(cat "/sys/class/power_supply/$POWER_SUPPLY/online" 2>/dev/null)" = "1" ]; then
+        return 0
+    fi
+    local supply
+    for supply in /sys/class/power_supply/*; do
+        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" \
+            && [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 CREATE_AP_PID=""
 
 cleanup() {
@@ -107,6 +123,11 @@ detect_channel() {
 }
 
 start_hotspot() {
+    if [ "$EUID" -ne 0 ]; then
+        SKIP_CLEANUP=1
+        log "ERR" "Starting the hotspot requires root. Run: sudo fiero-hotspot start"
+        exit 1
+    fi
     exec 9>/run/fiero-hotspot.lock
     flock -n 9 || { log "INFO" "Another instance is running. Exiting."; SKIP_CLEANUP=1; exit 0; }
 
@@ -185,17 +206,14 @@ start_hotspot() {
 }
 
 stop_hotspot() {
-	touch "$SHUTDOWN_LOCK"
+    if [ "$EUID" -ne 0 ]; then
+        SKIP_CLEANUP=1
+        log "ERR" "Stopping the hotspot requires root. Run: sudo fiero-hotspot stop"
+        exit 1
+    fi
+    touch "$SHUTDOWN_LOCK"
     log "INFO" "Stopping hotspot..."
-    local ac_connected=0
-    for supply in /sys/class/power_supply/*; do
-        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" \
-            && [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
-            ac_connected=1
-            break
-        fi
-    done
-    if [ "$ac_connected" -eq 1 ]; then
+    if ac_online; then
         notify "Hotspot stopped manually"
     else
         notify "Hotspot stopped (charger unplugged)"
@@ -203,10 +221,128 @@ stop_hotspot() {
     # Teardown is handled automatically by the EXIT trap
 }
 
+status_hotspot() {
+    SKIP_CLEANUP=1
+    if [ "$EUID" -ne 0 ]; then
+        log "ERR" "Status requires root. Run: sudo fiero-hotspot status"
+        exit 1
+    fi
+
+    local svc_state ap_iface ap_channel ap_freq client_count ac_status
+
+    svc_state=$(systemctl is-active fiero-hotspot.service 2>/dev/null || true)
+    svc_state="${svc_state:-inactive}"
+
+    ap_iface=$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2; exit}')
+    ap_iface="${ap_iface:-none}"
+
+    if [ "$ap_iface" != "none" ]; then
+        ap_channel=$(iw dev "$ap_iface" info 2>/dev/null | awk '/channel/{print $2; exit}')
+        ap_freq=$(iw dev "$ap_iface" link 2>/dev/null | awk '/freq/{print $2; exit}')
+        client_count=$(iw dev "$ap_iface" station dump 2>/dev/null | grep -c "^Station " || echo "0")
+    else
+        ap_channel="-"
+        ap_freq="-"
+        client_count=0
+    fi
+
+    if ac_online; then
+        ac_status="Connected"
+    else
+        ac_status="Battery"
+    fi
+
+    local freq_display="-"
+    if [ -n "$ap_freq" ] && [ "$ap_freq" != "-" ]; then
+        freq_display="${ap_freq} MHz"
+    fi
+
+    local channel_display="-"
+    if [ -n "$ap_channel" ] && [ "$ap_channel" != "-" ]; then
+        channel_display="${ap_channel} (${freq_display})"
+    fi
+
+    printf "=== Fiero Hotspot Status ===\n"
+    printf "  Service    : %s\n" "$svc_state"
+    printf "  AP iface   : %s\n" "$ap_iface"
+    printf "  SSID       : %s\n" "$SSID"
+    printf "  Channel    : %s\n" "$channel_display"
+    printf "  AC Power   : %s\n" "$ac_status"
+    printf "  Clients    : %s\n" "$client_count"
+}
+
+clients_hotspot() {
+    SKIP_CLEANUP=1
+    if [ "$EUID" -ne 0 ]; then
+        log "ERR" "Client listing requires root. Run: sudo fiero-hotspot clients"
+        exit 1
+    fi
+
+    local ap_iface
+    ap_iface=$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2; exit}')
+
+    if [ -z "$ap_iface" ]; then
+        log "INFO" "Hotspot is not running. No AP interface found."
+        exit 0
+    fi
+
+    local -A mac_to_ip mac_to_host
+    local lease_file
+    for lease_file in /var/lib/misc/dnsmasq.leases /tmp/create_ap.*/dnsmasq.leases; do
+        [ -f "$lease_file" ] || continue
+        while IFS=' ' read -r _expiry mac ip hostname _rest; do
+            mac_to_ip["$mac"]="$ip"
+            if [ -n "$hostname" ] && [ "$hostname" != "*" ]; then
+                mac_to_host["$mac"]="$hostname"
+            fi
+        done < "$lease_file"
+    done
+
+    local station_output
+    station_output=$(iw dev "$ap_iface" station dump 2>/dev/null)
+
+    if [ -z "$station_output" ]; then
+        log "INFO" "No clients connected."
+        exit 0
+    fi
+
+    printf "=== Fiero Hotspot Clients ===\n"
+    printf "  %-17s %-10s %-15s %s\n" "MAC" "Signal" "IP" "Hostname"
+    printf "  %-17s %-10s %-15s %s\n" "─────────────────" "──────────" "───────────────" "─────────────"
+
+    local current_mac=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^Station\ ([0-9a-fA-F:]+) ]]; then
+            current_mac="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ signal:\ (-?[0-9]+)\ dBm ]]; then
+            local signal="${BASH_REMATCH[1]}"
+            local ip="${mac_to_ip[$current_mac]:--}"
+            local host="${mac_to_host[$current_mac]:--}"
+            printf "  %-17s %-10s %-15s %s\n" "$current_mac" "${signal} dBm" "$ip" "$host"
+        fi
+    done <<< "$station_output"
+}
+
 case "${1:-}" in
-    start) start_hotspot ;;
-    stop) stop_hotspot ;;
-    *) start_hotspot ;;
+    start)   start_hotspot ;;
+    stop)    stop_hotspot ;;
+    status)  status_hotspot ;;
+    clients) clients_hotspot ;;
+    help|-h|--help|"")
+        SKIP_CLEANUP=1
+        printf "Usage: fiero-hotspot {start|stop|status|clients|help}\n"
+        printf "\n"
+        printf "  start    Start the hotspot daemon\n"
+        printf "  stop     Stop the hotspot daemon\n"
+        printf "  status   Show hotspot status dashboard\n"
+        printf "  clients  List connected clients\n"
+        printf "  help     Show this help message\n"
+        ;;
+    *)
+        SKIP_CLEANUP=1
+        log "ERR" "Unknown action: '$1'. Run 'fiero-hotspot help' for usage."
+        exit 1
+        ;;
 esac
 
 # END OF FILE

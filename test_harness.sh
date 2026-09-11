@@ -708,8 +708,194 @@ else
   edge_result "Phase 8c.1: missing config file -> error" FAIL
 fi
 
+# ------------------------------------------------------------------------------
+# 9. CLI Subcommands & Privilege Isolation
+# ------------------------------------------------------------------------------
+SCRIPT_UNDER_TEST="/usr/local/bin/fiero-hotspot"
+
+# 9a. Unprivileged execution & error routing
+set +e
+SU_START_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST start" 2>&1)
+SU_START_RC=$?
+SU_STOP_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST stop" 2>&1)
+SU_STOP_RC=$?
+SU_STATUS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST status" 2>&1)
+SU_STATUS_RC=$?
+SU_CLIENTS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST clients" 2>&1)
+SU_CLIENTS_RC=$?
+set -e
+
+if [[ "$SU_START_RC" -eq 1 ]]; then
+  edge_result "Phase 9a.1: unprivileged start -> exit 1" PASS
+else
+  edge_result "Phase 9a.1: unprivileged start -> exit 1" FAIL
+fi
+if [[ "$SU_START_OUT" == *"Starting the hotspot requires root"* ]]; then
+  edge_result "Phase 9a.2: unprivileged start -> correct error message" PASS
+else
+  edge_result "Phase 9a.2: unprivileged start -> correct error message" FAIL
+fi
+
+if [[ "$SU_STOP_RC" -eq 1 ]]; then
+  edge_result "Phase 9a.3: unprivileged stop -> exit 1" PASS
+else
+  edge_result "Phase 9a.3: unprivileged stop -> exit 1" FAIL
+fi
+if [[ "$SU_STOP_OUT" == *"Stopping the hotspot requires root"* ]]; then
+  edge_result "Phase 9a.4: unprivileged stop -> correct error message" PASS
+else
+  edge_result "Phase 9a.4: unprivileged stop -> correct error message" FAIL
+fi
+
+if [[ "$SU_STATUS_RC" -eq 1 ]]; then
+  edge_result "Phase 9a.5: unprivileged status -> exit 1" PASS
+else
+  edge_result "Phase 9a.5: unprivileged status -> exit 1" FAIL
+fi
+if [[ "$SU_STATUS_OUT" == *"Status requires root"* ]]; then
+  edge_result "Phase 9a.6: unprivileged status -> correct error message" PASS
+else
+  edge_result "Phase 9a.6: unprivileged status -> correct error message" FAIL
+fi
+
+if [[ "$SU_CLIENTS_RC" -eq 1 ]]; then
+  edge_result "Phase 9a.7: unprivileged clients -> exit 1" PASS
+else
+  edge_result "Phase 9a.7: unprivileged clients -> exit 1" FAIL
+fi
+if [[ "$SU_CLIENTS_OUT" == *"Client listing requires root"* ]]; then
+  edge_result "Phase 9a.8: unprivileged clients -> correct error message" PASS
+else
+  edge_result "Phase 9a.8: unprivileged clients -> correct error message" FAIL
+fi
+
+# Ensure no raw permission denied or flock errors leaked
+SU_ALL_OUTPUT="$SU_START_OUT $SU_STOP_OUT $SU_STATUS_OUT $SU_CLIENTS_OUT"
+if [[ "$SU_ALL_OUTPUT" != *"Permission denied"* ]] && [[ "$SU_ALL_OUTPUT" != *"Bad file descriptor"* ]]; then
+  edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" PASS
+else
+  edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" FAIL
+fi
+
+# 9b. CLI dispatcher & help fallbacks
+set +e
+HELP_EMPTY=$("$SCRIPT_UNDER_TEST" 2>&1)
+HELP_EMPTY_RC=$?
+HELP_H=$("$SCRIPT_UNDER_TEST" -h 2>&1)
+HELP_H_RC=$?
+HELP_DOUBLE=$("$SCRIPT_UNDER_TEST" --help 2>&1)
+HELP_DOUBLE_RC=$?
+HELP_WORD=$("$SCRIPT_UNDER_TEST" help 2>&1)
+HELP_WORD_RC=$?
+HELP_BOGUS=$("$SCRIPT_UNDER_TEST" bogus 2>&1)
+HELP_BOGUS_RC=$?
+set -e
+
+if [[ "$HELP_EMPTY_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.1: no arguments -> exit 0" PASS
+else
+  edge_result "Phase 9b.1: no arguments -> exit 0" FAIL
+fi
+if [[ "$HELP_H_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.2: -h flag -> exit 0" PASS
+else
+  edge_result "Phase 9b.2: -h flag -> exit 0" FAIL
+fi
+if [[ "$HELP_DOUBLE_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.3: --help flag -> exit 0" PASS
+else
+  edge_result "Phase 9b.3: --help flag -> exit 0" FAIL
+fi
+if [[ "$HELP_WORD_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.4: 'help' subcommand -> exit 0" PASS
+else
+  edge_result "Phase 9b.4: 'help' subcommand -> exit 0" FAIL
+fi
+
+for help_var in HELP_EMPTY HELP_H HELP_DOUBLE HELP_WORD; do
+  if [[ "${!help_var}" != *"Usage: fiero-hotspot"* ]]; then
+    edge_result "Phase 9b.5: all help paths print usage" FAIL
+    break
+  fi
+done
+if [[ "$HELP_EMPTY" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_H" == *"Usage: fiero-hotspot"* ]] \
+  && [[ "$HELP_DOUBLE" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_WORD" == *"Usage: fiero-hotspot"* ]]; then
+  edge_result "Phase 9b.5: all help paths print usage" PASS
+fi
+
+if [[ "$HELP_BOGUS_RC" -eq 1 ]]; then
+  edge_result "Phase 9b.6: unknown subcommand -> exit 1" PASS
+else
+  edge_result "Phase 9b.6: unknown subcommand -> exit 1" FAIL
+fi
+if [[ "$HELP_BOGUS" == *"[ERR] Unknown action: 'bogus'"* ]]; then
+  edge_result "Phase 9b.7: unknown subcommand -> correct error" PASS
+else
+  edge_result "Phase 9b.7: unknown subcommand -> correct error" FAIL
+fi
+
+# 9c. Cleanup trap isolation (SKIP_CLEANUP=1 validation)
+TRAP_MARKER="/tmp/create_ap.test_trap_cleanup_marker_$$"
+touch "$TRAP_MARKER"
+
+"$SCRIPT_UNDER_TEST" help >/dev/null 2>&1
+if [[ -f "$TRAP_MARKER" ]]; then
+  edge_result "Phase 9c.1: help does not trigger cleanup" PASS
+else
+  edge_result "Phase 9c.1: help does not trigger cleanup" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" bogus >/dev/null 2>&1 || true
+if [[ -f "$TRAP_MARKER" ]]; then
+  edge_result "Phase 9c.2: unknown subcommand does not trigger cleanup" PASS
+else
+  edge_result "Phase 9c.2: unknown subcommand does not trigger cleanup" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" status >/dev/null 2>&1 || true
+if [[ -f "$TRAP_MARKER" ]]; then
+  edge_result "Phase 9c.3: status does not trigger cleanup" PASS
+else
+  edge_result "Phase 9c.3: status does not trigger cleanup" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" clients >/dev/null 2>&1 || true
+if [[ -f "$TRAP_MARKER" ]]; then
+  edge_result "Phase 9c.4: clients does not trigger cleanup" PASS
+else
+  edge_result "Phase 9c.4: clients does not trigger cleanup" FAIL
+fi
+
+rm -f "$TRAP_MARKER"
+
+# 9d. Service status output format check
+set +e
+STATUS_ROOT_OUT=$("$SCRIPT_UNDER_TEST" status 2>&1)
+STATUS_ROOT_RC=$?
+set -e
+
+if [[ "$STATUS_ROOT_RC" -eq 0 ]]; then
+  edge_result "Phase 9d.1: status as root -> exit 0" PASS
+else
+  edge_result "Phase 9d.1: status as root -> exit 0" FAIL
+fi
+
+if [[ "$STATUS_ROOT_OUT" == *"Service"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]]; then
+  edge_result "Phase 9d.2: status output contains Service field" PASS
+else
+  edge_result "Phase 9d.2: status output contains Service field" FAIL
+fi
+
+# Count occurrences of "inactive" in status output
+INACTIVE_COUNT=$(printf '%s\n' "$STATUS_ROOT_OUT" | grep -c "inactive" || true)
+if [[ "$INACTIVE_COUNT" -le 1 ]]; then
+  edge_result "Phase 9d.3: no duplicate inactive in status output" PASS
+else
+  edge_result "Phase 9d.3: no duplicate inactive in status output" FAIL
+fi
+
 # ==============================================================================
-# 9. Lifecycle Startup Benchmark
+# 10. Lifecycle Startup Benchmark
 # ==============================================================================
 STARTUP_SUCCESS=false
 STARTUP_TIME_MS=0
@@ -761,7 +947,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 10. Resource Footprint Snapshot
+# 11. Resource Footprint Snapshot
 # ------------------------------------------------------------------------------
 RESOURCE_SNAPSHOT=""
 if [[ "$STARTUP_SUCCESS" == "true" ]]; then
@@ -773,7 +959,7 @@ if [[ "$STARTUP_SUCCESS" == "true" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 11. Lifecycle Teardown Benchmark
+# 12. Lifecycle Teardown Benchmark
 # ------------------------------------------------------------------------------
 TEARDOWN_SUCCESS=false
 TEARDOWN_TIME_MS=0
@@ -805,7 +991,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 12. Post-Execution Logs Harvesting
+# 13. Post-Execution Logs Harvesting
 # ------------------------------------------------------------------------------
 echo "[INFO] Collecting system journals, dmesg, and leak audit logs..."
 
@@ -828,7 +1014,7 @@ dmesg -T --color=never > "$LOG_DIR/05-dmesg-full.log" 2>&1 || true
 } > "$LOG_DIR/06-leak-audit.log"
 
 # ------------------------------------------------------------------------------
-# 13. Leak Audit & Exit Matrix Evaluation
+# 14. Leak Audit & Exit Matrix Evaluation
 # ------------------------------------------------------------------------------
 HARD_FAIL=0
 WARNINGS=0
@@ -875,7 +1061,7 @@ if [[ "$EDGE_FAIL" -gt 0 ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 14. Summary Report Generation
+# 15. Summary Report Generation
 # ------------------------------------------------------------------------------
 {
   echo "======================================================================"
