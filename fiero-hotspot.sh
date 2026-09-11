@@ -42,7 +42,9 @@ notify() {
         log "WARN" "TARGET_USER/TARGET_UID not set; skipping desktop notification."
         return 0
     fi
-    sudo -u "$TARGET_USER" env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
+    sudo -u "$TARGET_USER" env \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" \
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
 }
 

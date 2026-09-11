@@ -867,7 +867,8 @@ fi
 
 # 9b-new. version subcommand and aliases
 set +e
-EXPECTED_VERSION="$("$SCRIPT_UNDER_TEST" version 2>/dev/null)"
+SCRIPT_VERSION=$(grep -m1 '^VERSION=' "$SCRIPT_UNDER_TEST" | cut -d'"' -f2)
+EXPECTED_VERSION="fiero-hotspot v${SCRIPT_VERSION}"
 VER_LONG="$("$SCRIPT_UNDER_TEST" version 2>&1)"
 VER_LONG_RC=$?
 VER_SHORT=$("$SCRIPT_UNDER_TEST" -v 2>&1)

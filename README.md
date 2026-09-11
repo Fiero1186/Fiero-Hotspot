@@ -234,7 +234,7 @@ The harness executes **98 test assertions** across 10 phases:
 | **8b** | 2 | Config file permissions post-install: mode 640, root ownership |
 | **8c** | 1 | Missing config file error path |
 | **9a** | 11 | Unprivileged execution: exit 1 + correct error message for `start`/`stop`/`status`/`clients` as `$TARGET_USER`; exit 0 + version output for `version`; no `Permission denied` or `flock` error leaks |
-| **9b** | 13 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; `version`/`-v`/`--version` → exit 0 + `"fiero-hotspot v1.1.1"`; unknown subcommand → exit 1 with `[ERR]` |
+| **9b** | 13 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; `version`/`-v`/`--version` → exit 0 + current version string; unknown subcommand → exit 1 with `[ERR]` |
 | **9c** | 5 | Cleanup trap isolation: `/tmp/create_ap*` marker file survives `help`, `bogus`, `status`, `clients`, `version` (validates `SKIP_CLEANUP=1`) |
 | **9d** | 3 | Status output format: root exit 0, contains `Service` field, no duplicate `inactive` lines |
 
