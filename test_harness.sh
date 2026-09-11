@@ -723,6 +723,8 @@ SU_STATUS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST status" 2>&1)
 SU_STATUS_RC=$?
 SU_CLIENTS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST clients" 2>&1)
 SU_CLIENTS_RC=$?
+SU_VERSION_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST version" 2>&1)
+SU_VERSION_RC=$?
 set -e
 
 if [[ "$SU_START_RC" -eq 1 ]]; then
@@ -769,8 +771,19 @@ else
   edge_result "Phase 9a.8: unprivileged clients -> correct error message" FAIL
 fi
 
+if [[ "$SU_VERSION_RC" -eq 0 ]]; then
+  edge_result "Phase 9a.10: unprivileged version -> exit 0" PASS
+else
+  edge_result "Phase 9a.10: unprivileged version -> exit 0" FAIL
+fi
+if [[ "$SU_VERSION_OUT" == *"fiero-hotspot v"* ]]; then
+  edge_result "Phase 9a.11: unprivileged version -> outputs version string" PASS
+else
+  edge_result "Phase 9a.11: unprivileged version -> outputs version string" FAIL
+fi
+
 # Ensure no raw permission denied or flock errors leaked
-SU_ALL_OUTPUT="$SU_START_OUT $SU_STOP_OUT $SU_STATUS_OUT $SU_CLIENTS_OUT"
+SU_ALL_OUTPUT="$SU_START_OUT $SU_STOP_OUT $SU_STATUS_OUT $SU_CLIENTS_OUT $SU_VERSION_OUT"
 if [[ "$SU_ALL_OUTPUT" != *"Permission denied"* ]] && [[ "$SU_ALL_OUTPUT" != *"Bad file descriptor"* ]]; then
   edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" PASS
 else
@@ -823,6 +836,47 @@ if [[ "$HELP_EMPTY" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_H" == *"Usage: f
   edge_result "Phase 9b.5: all help paths print usage" PASS
 fi
 
+# 9b-new. version subcommand and aliases
+set +e
+VER_LONG=$("$SCRIPT_UNDER_TEST" version 2>&1)
+VER_LONG_RC=$?
+VER_SHORT=$("$SCRIPT_UNDER_TEST" -v 2>&1)
+VER_SHORT_RC=$?
+VER_DASH=$("$SCRIPT_UNDER_TEST" --version 2>&1)
+VER_DASH_RC=$?
+set -e
+
+if [[ "$VER_LONG_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.8: 'version' -> exit 0" PASS
+else
+  edge_result "Phase 9b.8: 'version' -> exit 0" FAIL
+fi
+if [[ "$VER_LONG" == "fiero-hotspot v1.1.1" ]]; then
+  edge_result "Phase 9b.9: 'version' -> correct output" PASS
+else
+  edge_result "Phase 9b.9: 'version' -> correct output" FAIL
+fi
+if [[ "$VER_SHORT_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.10: '-v' flag -> exit 0" PASS
+else
+  edge_result "Phase 9b.10: '-v' flag -> exit 0" FAIL
+fi
+if [[ "$VER_SHORT" == "fiero-hotspot v1.1.1" ]]; then
+  edge_result "Phase 9b.11: '-v' flag -> correct output" PASS
+else
+  edge_result "Phase 9b.11: '-v' flag -> correct output" FAIL
+fi
+if [[ "$VER_DASH_RC" -eq 0 ]]; then
+  edge_result "Phase 9b.12: '--version' flag -> exit 0" PASS
+else
+  edge_result "Phase 9b.12: '--version' flag -> exit 0" FAIL
+fi
+if [[ "$VER_DASH" == "fiero-hotspot v1.1.1" ]]; then
+  edge_result "Phase 9b.13: '--version' flag -> correct output" PASS
+else
+  edge_result "Phase 9b.13: '--version' flag -> correct output" FAIL
+fi
+
 if [[ "$HELP_BOGUS_RC" -eq 1 ]]; then
   edge_result "Phase 9b.6: unknown subcommand -> exit 1" PASS
 else
@@ -864,6 +918,13 @@ if [[ -f "$TRAP_MARKER" ]]; then
   edge_result "Phase 9c.4: clients does not trigger cleanup" PASS
 else
   edge_result "Phase 9c.4: clients does not trigger cleanup" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" version >/dev/null 2>&1 || true
+if [[ -f "$TRAP_MARKER" ]]; then
+  edge_result "Phase 9c.5: version does not trigger cleanup" PASS
+else
+  edge_result "Phase 9c.5: version does not trigger cleanup" FAIL
 fi
 
 rm -f "$TRAP_MARKER"

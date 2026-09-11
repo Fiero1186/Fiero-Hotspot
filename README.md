@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v1.1.0-blue)
+![Version](https://img.shields.io/badge/version-v1.1.1-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 ## Overview
@@ -164,6 +164,7 @@ sudo fiero-hotspot start          # Start the hotspot daemon
 sudo fiero-hotspot stop           # Stop the hotspot daemon
 sudo fiero-hotspot status         # Show daemon state, AP interface, SSID, channel, AC power, client count
 sudo fiero-hotspot clients        # List connected devices (MAC, signal dBm, DHCP IP, hostname)
+fiero-hotspot version             # Show version (also: -v, --version) — no root required
 fiero-hotspot help                # Print usage menu (also: -h, --help, or no arguments)
 ```
 
@@ -211,7 +212,7 @@ Requires root and a valid `/etc/fiero-hotspot.conf` with `INTERFACE`, `TARGET_US
 
 ### Test Phases
 
-The harness executes **80 test assertions** across 10 phases:
+The harness executes **89 test assertions** across 10 phases:
 
 | Phase | Tests | Description |
 |-------|-------|-------------|
@@ -232,9 +233,9 @@ The harness executes **80 test assertions** across 10 phases:
 | **8a** | 3 | Config file sourcing: valid values, escaped special chars, full SSID with embedded quotes/dollar/backticks |
 | **8b** | 2 | Config file permissions post-install: mode 640, root ownership |
 | **8c** | 1 | Missing config file error path |
-| **9a** | 9 | Unprivileged execution: exit 1 + correct error message for `start`/`stop`/`status`/`clients` as `$TARGET_USER`; no `Permission denied` or `flock` error leaks |
-| **9b** | 7 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; unknown subcommand → exit 1 with `[ERR]` |
-| **9c** | 4 | Cleanup trap isolation: `/tmp/create_ap*` marker file survives `help`, `bogus`, `status`, `clients` (validates `SKIP_CLEANUP=1`) |
+| **9a** | 11 | Unprivileged execution: exit 1 + correct error message for `start`/`stop`/`status`/`clients` as `$TARGET_USER`; exit 0 + version output for `version`; no `Permission denied` or `flock` error leaks |
+| **9b** | 13 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; `version`/`-v`/`--version` → exit 0 + `"fiero-hotspot v1.1.1"`; unknown subcommand → exit 1 with `[ERR]` |
+| **9c** | 5 | Cleanup trap isolation: `/tmp/create_ap*` marker file survives `help`, `bogus`, `status`, `clients`, `version` (validates `SKIP_CLEANUP=1`) |
 | **9d** | 3 | Status output format: root exit 0, contains `Service` field, no duplicate `inactive` lines |
 
 ### Lifecycle Benchmarks (hardware-dependent)
@@ -329,7 +330,7 @@ I will do occasional updates to this project whenever I am free to do so, but pl
 
 ### Built with AI, Verified with Ironclad Constraints
 The implementation was vibe-coded using local LLMs via OpenCode/DeepSeek, under strict systems engineering constraints:
-- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 80-pass bash test harness (`test_harness.sh`).
+- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 89-pass bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
 - **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.

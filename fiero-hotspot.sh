@@ -23,6 +23,8 @@ SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
+VERSION="1.1.1"
+
 # --- Logging Setup ---
 log() {
     local level="$1"
@@ -328,14 +330,19 @@ case "${1:-}" in
     stop)    stop_hotspot ;;
     status)  status_hotspot ;;
     clients) clients_hotspot ;;
+    version|-v|--version)
+        SKIP_CLEANUP=1
+        printf "fiero-hotspot v%s\n" "$VERSION"
+        ;;
     help|-h|--help|"")
         SKIP_CLEANUP=1
-        printf "Usage: fiero-hotspot {start|stop|status|clients|help}\n"
+        printf "Usage: fiero-hotspot {start|stop|status|clients|version|help}\n"
         printf "\n"
         printf "  start    Start the hotspot daemon\n"
         printf "  stop     Stop the hotspot daemon\n"
         printf "  status   Show hotspot status dashboard\n"
         printf "  clients  List connected clients\n"
+        printf "  version  Show version information (also: -v, --version)\n"
         printf "  help     Show this help message\n"
         ;;
     *)
