@@ -155,6 +155,42 @@ sudo systemctl start fiero-hotspot.service
 sudo systemctl stop fiero-hotspot.service
 ```
 
+### CLI Commands
+
+`fiero-hotspot` doubles as a user-facing CLI tool. Commands that query hardware or system state (`start`, `stop`, `status`, `clients`) require root.
+
+```bash
+sudo fiero-hotspot start          # Start the hotspot daemon
+sudo fiero-hotspot stop           # Stop the hotspot daemon
+sudo fiero-hotspot status         # Show daemon state, AP interface, SSID, channel, AC power, client count
+sudo fiero-hotspot clients        # List connected devices (MAC, signal dBm, DHCP IP, hostname)
+fiero-hotspot help                # Print usage menu (also: -h, --help, or no arguments)
+```
+
+**`status` output example:**
+
+```
+=== Fiero Hotspot Status ===
+  Service    : active
+  AP iface   : ap0
+  SSID       : MyHotspot
+  Channel    : 6 (2437 MHz)
+  AC Power   : Connected
+  Clients    : 3
+```
+
+**`clients` output example:**
+
+```
+=== Fiero Hotspot Clients ===
+  MAC                Signal     IP              Hostname
+  ─────────────────  ─────────  ──────────────  ──────────────
+  aa:bb:cc:dd:ee:ff  -45 dBm    192.168.12.10   laptop-home
+  11:22:33:44:55:66  -62 dBm    192.168.12.11   -
+```
+
+IP and hostname are resolved from `/var/lib/misc/dnsmasq.leases` (and any `create_ap` runtime lease files). Fields default to `-` when unavailable.
+
 ### Uninstall
 
 ```bash
@@ -175,7 +211,7 @@ Requires root and a valid `/etc/fiero-hotspot.conf` with `INTERFACE`, `TARGET_US
 
 ### Test Phases
 
-The harness executes **57 test assertions** across 9 phases:
+The harness executes **80 test assertions** across 10 phases:
 
 | Phase | Tests | Description |
 |-------|-------|-------------|
@@ -196,10 +232,14 @@ The harness executes **57 test assertions** across 9 phases:
 | **8a** | 3 | Config file sourcing: valid values, escaped special chars, full SSID with embedded quotes/dollar/backticks |
 | **8b** | 2 | Config file permissions post-install: mode 640, root ownership |
 | **8c** | 1 | Missing config file error path |
+| **9a** | 9 | Unprivileged execution: exit 1 + correct error message for `start`/`stop`/`status`/`clients` as `$TARGET_USER`; no `Permission denied` or `flock` error leaks |
+| **9b** | 7 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; unknown subcommand → exit 1 with `[ERR]` |
+| **9c** | 4 | Cleanup trap isolation: `/tmp/create_ap*` marker file survives `help`, `bogus`, `status`, `clients` (validates `SKIP_CLEANUP=1`) |
+| **9d** | 3 | Status output format: root exit 0, contains `Service` field, no duplicate `inactive` lines |
 
 ### Lifecycle Benchmarks (hardware-dependent)
 
-Phases 9-11 run only when upstream Wi-Fi is on a supported channel:
+Phases 10-12 run only when upstream Wi-Fi is on a supported channel:
 
 - **Startup**: starts `fiero-hotspot.service`, polls for `ap*` interface and `hostapd` presence (15s timeout)
 - **Resource snapshot**: captures `create_ap`/`hostapd`/`dnsmasq` process table
@@ -289,7 +329,7 @@ I will do occasional updates to this project whenever I am free to do so, but pl
 
 ### Built with AI, Verified with Ironclad Constraints
 The implementation was vibe-coded using local LLMs via OpenCode/DeepSeek, under strict systems engineering constraints:
-- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 57-pass bash test harness (`test_harness.sh`).
+- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 80-pass bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
 - **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.
