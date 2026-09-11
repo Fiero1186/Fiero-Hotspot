@@ -329,7 +329,7 @@ It is late at night now, as I am typing out this readme, 10 mins past my bedtime
 I will do occasional updates to this project whenever I am free to do so, but please don't expect too much out of me, as this is a real niche software.
 
 ### Built with AI, Verified with Ironclad Constraints
-The implementation was vibe-coded using local LLMs via OpenCode/DeepSeek, under strict systems engineering constraints:
+The implementation was vibe-coded using local LLMs via OpenCode, under strict systems engineering constraints:
 - **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 98-pass bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
