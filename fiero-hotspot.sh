@@ -23,7 +23,7 @@ SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 # --- Logging Setup ---
 log() {
@@ -266,6 +266,11 @@ status_hotspot() {
 
     printf "=== Fiero Hotspot Status ===\n"
     printf "  Service    : %s\n" "$svc_state"
+    if [ "${AUTO_PROMPT:-true}" = "true" ]; then
+        printf "  Mode       : Auto (Prompt on AC)\n"
+    else
+        printf "  Mode       : Manual (CLI only)\n"
+    fi
     printf "  AP iface   : %s\n" "$ap_iface"
     printf "  SSID       : %s\n" "$SSID"
     printf "  Channel    : %s\n" "$channel_display"
@@ -330,18 +335,73 @@ case "${1:-}" in
     stop)    stop_hotspot ;;
     status)  status_hotspot ;;
     clients) clients_hotspot ;;
+    mode|toggle)
+        SKIP_CLEANUP=1
+        if [ "$EUID" -ne 0 ]; then
+            log "ERR" "Mode toggle requires root. Run: sudo fiero-hotspot mode"
+            exit 1
+        fi
+        cfg="/etc/fiero-hotspot.conf"
+        current="${AUTO_PROMPT:-true}"
+        update_auto_prompt() {
+            local val="$1"
+            if grep -q '^AUTO_PROMPT=' "$cfg" 2>/dev/null; then
+                sed -i "s/^AUTO_PROMPT=.*/AUTO_PROMPT='${val}'/" "$cfg"
+            else
+                echo "AUTO_PROMPT='${val}'" >> "$cfg"
+            fi
+        }
+        case "${2:-}" in
+            auto|enable|on)
+                update_auto_prompt 'true'
+                log "INFO" "Auto-prompt enabled."
+                ;;
+            manual|disable|off)
+                update_auto_prompt 'false'
+                log "INFO" "Auto-prompt disabled (manual mode)."
+                ;;
+            "")
+                if [ "$current" = "true" ]; then
+                    printf "Current mode: Auto (Prompt on AC)\n"
+                    read -rp "Switch to Manual? [y/N]: " ans
+                else
+                    printf "Current mode: Manual (CLI only)\n"
+                    read -rp "Switch to Auto? [y/N]: " ans
+                fi
+                case "${ans}" in
+                    [yY]|[yY][eE][sS])
+                        if [ "$current" = "true" ]; then
+                            update_auto_prompt 'false'
+                            log "INFO" "Switched to manual mode."
+                        else
+                            update_auto_prompt 'true'
+                            log "INFO" "Switched to auto mode."
+                        fi
+                        ;;
+                    *)
+                        log "INFO" "No change."
+                        ;;
+                esac
+                ;;
+            *)
+                log "ERR" "Unknown mode: '$2'. Use 'auto' or 'manual'."
+                exit 1
+                ;;
+        esac
+        ;;
     version|-v|--version)
         SKIP_CLEANUP=1
         printf "fiero-hotspot v%s\n" "$VERSION"
         ;;
     help|-h|--help|"")
         SKIP_CLEANUP=1
-        printf "Usage: fiero-hotspot {start|stop|status|clients|version|help}\n"
+        printf "Usage: fiero-hotspot {start|stop|status|clients|mode|version|help}\n"
         printf "\n"
         printf "  start    Start the hotspot daemon\n"
         printf "  stop     Stop the hotspot daemon\n"
         printf "  status   Show hotspot status dashboard\n"
         printf "  clients  List connected clients\n"
+        printf "  mode     Toggle or set trigger mode (auto|manual)\n"
         printf "  version  Show version information (also: -v, --version)\n"
         printf "  help     Show this help message\n"
         ;;

@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v1.1.1-blue)
+![Version](https://img.shields.io/badge/version-v1.2.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 ## Overview
@@ -212,7 +212,7 @@ Requires root and a valid `/etc/fiero-hotspot.conf` with `INTERFACE`, `TARGET_US
 
 ### Test Phases
 
-The harness executes **89 test assertions** across 10 phases:
+The harness executes **98 test assertions** across 10 phases:
 
 | Phase | Tests | Description |
 |-------|-------|-------------|
@@ -330,7 +330,7 @@ I will do occasional updates to this project whenever I am free to do so, but pl
 
 ### Built with AI, Verified with Ironclad Constraints
 The implementation was vibe-coded using local LLMs via OpenCode/DeepSeek, under strict systems engineering constraints:
-- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 89-pass bash test harness (`test_harness.sh`).
+- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 98-pass bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
 - **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.

@@ -460,6 +460,22 @@ else
   edge_result "Phase 6d.2: unsupported channel rejected" PASS
 fi
 
+# 6e. fiero-prompt.sh AUTO_PROMPT=false early exit
+PROMPT_SCRIPT="/usr/local/bin/fiero-prompt"
+if [[ -f "$PROMPT_SCRIPT" ]]; then
+  set +e
+  AUTO_PROMPT=false "$PROMPT_SCRIPT" 2>/dev/null
+  AP_RC=$?
+  set -e
+  if [[ "$AP_RC" -eq 0 ]]; then
+    edge_result "Phase 6e.1: AUTO_PROMPT=false -> fiero-prompt exits 0" PASS
+  else
+    edge_result "Phase 6e.1: AUTO_PROMPT=false -> fiero-prompt exits 0" FAIL
+  fi
+else
+  edge_result "Phase 6e.1: AUTO_PROMPT=false -> fiero-prompt exits 0" SKIP
+fi
+
 # ------------------------------------------------------------------------------
 # 7. fiero-hotspot.sh Edge Cases (replicated logic, file NOT sourced)
 # ------------------------------------------------------------------------------
@@ -725,6 +741,8 @@ SU_CLIENTS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST clients" 2>&1)
 SU_CLIENTS_RC=$?
 SU_VERSION_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST version" 2>&1)
 SU_VERSION_RC=$?
+SU_MODE_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST mode" 2>&1)
+SU_MODE_RC=$?
 set -e
 
 if [[ "$SU_START_RC" -eq 1 ]]; then
@@ -780,6 +798,17 @@ if [[ "$SU_VERSION_OUT" == *"fiero-hotspot v"* ]]; then
   edge_result "Phase 9a.11: unprivileged version -> outputs version string" PASS
 else
   edge_result "Phase 9a.11: unprivileged version -> outputs version string" FAIL
+fi
+
+if [[ "$SU_MODE_RC" -eq 1 ]]; then
+  edge_result "Phase 9a.12: unprivileged mode -> exit 1" PASS
+else
+  edge_result "Phase 9a.12: unprivileged mode -> exit 1" FAIL
+fi
+if [[ "$SU_MODE_OUT" == *"Mode toggle requires root"* ]]; then
+  edge_result "Phase 9a.13: unprivileged mode -> correct error message" PASS
+else
+  edge_result "Phase 9a.13: unprivileged mode -> correct error message" FAIL
 fi
 
 # Ensure no raw permission denied or flock errors leaked
@@ -877,6 +906,48 @@ else
   edge_result "Phase 9b.13: '--version' flag -> correct output" FAIL
 fi
 
+# 9b-new2. mode subcommand: config file updates
+MODE_CFG_ORIG=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null || echo "")
+
+"$SCRIPT_UNDER_TEST" mode auto >/dev/null 2>&1
+MODE_AUTO_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+if [[ "$MODE_AUTO_VAL" == "'true'" ]] || [[ "$MODE_AUTO_VAL" == "true" ]]; then
+  edge_result "Phase 9b.14: 'mode auto' -> AUTO_PROMPT=true in config" PASS
+else
+  edge_result "Phase 9b.14: 'mode auto' -> AUTO_PROMPT=true in config" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" mode manual >/dev/null 2>&1
+MODE_MAN_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+if [[ "$MODE_MAN_VAL" == "'false'" ]] || [[ "$MODE_MAN_VAL" == "false" ]]; then
+  edge_result "Phase 9b.15: 'mode manual' -> AUTO_PROMPT=false in config" PASS
+else
+  edge_result "Phase 9b.15: 'mode manual' -> AUTO_PROMPT=false in config" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" mode on >/dev/null 2>&1
+MODE_ON_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+if [[ "$MODE_ON_VAL" == "'true'" ]] || [[ "$MODE_ON_VAL" == "true" ]]; then
+  edge_result "Phase 9b.16: 'mode on' alias -> AUTO_PROMPT=true in config" PASS
+else
+  edge_result "Phase 9b.16: 'mode on' alias -> AUTO_PROMPT=true in config" FAIL
+fi
+
+"$SCRIPT_UNDER_TEST" mode off >/dev/null 2>&1
+MODE_OFF_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+if [[ "$MODE_OFF_VAL" == "'false'" ]] || [[ "$MODE_OFF_VAL" == "false" ]]; then
+  edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" PASS
+else
+  edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" FAIL
+fi
+
+# Restore original AUTO_PROMPT value
+if [[ -n "$MODE_CFG_ORIG" ]]; then
+  sed -i "s/^AUTO_PROMPT=.*/$MODE_CFG_ORIG/" /etc/fiero-hotspot.conf
+else
+  sed -i "/^AUTO_PROMPT=/d" /etc/fiero-hotspot.conf 2>/dev/null || true
+fi
+
 if [[ "$HELP_BOGUS_RC" -eq 1 ]]; then
   edge_result "Phase 9b.6: unknown subcommand -> exit 1" PASS
 else
@@ -927,6 +998,13 @@ else
   edge_result "Phase 9c.5: version does not trigger cleanup" FAIL
 fi
 
+"$SCRIPT_UNDER_TEST" mode auto >/dev/null 2>&1 || true
+if [[ -f "$TRAP_MARKER" ]]; then
+  edge_result "Phase 9c.6: mode does not trigger cleanup" PASS
+else
+  edge_result "Phase 9c.6: mode does not trigger cleanup" FAIL
+fi
+
 rm -f "$TRAP_MARKER"
 
 # 9d. Service status output format check
@@ -945,6 +1023,12 @@ if [[ "$STATUS_ROOT_OUT" == *"Service"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]];
   edge_result "Phase 9d.2: status output contains Service field" PASS
 else
   edge_result "Phase 9d.2: status output contains Service field" FAIL
+fi
+
+if [[ "$STATUS_ROOT_OUT" == *"Mode"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]]; then
+  edge_result "Phase 9d.4: status output contains Mode field" PASS
+else
+  edge_result "Phase 9d.4: status output contains Mode field" FAIL
 fi
 
 # Count occurrences of "inactive" in status output

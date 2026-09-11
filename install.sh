@@ -147,6 +147,15 @@ done
 echo
 
 # ---------------------------------------------------------
+# 4b. AUTO_PROMPT SELECTION
+# ---------------------------------------------------------
+read -rp "Enable automatic hotspot prompt on charger connection? [Y/n]: " AUTO_PROMPT_INPUT
+case "${AUTO_PROMPT_INPUT:-Y}" in
+    [nN]|[nN][oO]) AUTO_PROMPT="false" ;;
+    *)              AUTO_PROMPT="true" ;;
+esac
+
+# ---------------------------------------------------------
 # 5. CONFIGURATION & DEPLOYMENT
 # ---------------------------------------------------------
 CONFIG_PATH="/etc/fiero-hotspot.conf"
@@ -169,6 +178,7 @@ POWER_SUPPLY=$(shquote "$POWER_SUPPLY")
 SUPPORTED_CHANNELS=$(shquote "$SUPPORTED_CHANNELS")
 TARGET_USER=$(shquote "$TARGET_USER")
 TARGET_UID=$(shquote "$TARGET_UID")
+AUTO_PROMPT=$(shquote "$AUTO_PROMPT")
 EOF
 
 chown root:"$TARGET_USER" "${CONFIG_PATH}.tmp.$$"

@@ -35,6 +35,10 @@ if [ -r "$CONFIG_FILE" ]; then
     fi
 fi
 
+if [ "${AUTO_PROMPT:-true}" != "true" ]; then
+    exit 0
+fi
+
 INTERFACE="${INTERFACE:-$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')}"
 SUPPORTED_CHANNELS="${SUPPORTED_CHANNELS:-1,2,3,4,5,6,7,8,9,10,11,36,40,44,48}"
 
