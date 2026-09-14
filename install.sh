@@ -35,10 +35,12 @@ if [ ${#MISSING_CMDS[@]} -ne 0 ]; then
     PKGS_ARCH=""
     PKGS_DEB=""
     PKGS_RPM=""
+    NEED_AUR_CREATE_AP=0
     for cmd in "${MISSING_CMDS[@]}"; do
         case "$cmd" in
             notify-send) PKGS_ARCH+="libnotify "; PKGS_DEB+="libnotify-bin "; PKGS_RPM+="libnotify " ;;
             pgrep)       PKGS_ARCH+="procps-ng "; PKGS_DEB+="procps ";      PKGS_RPM+="procps-ng " ;;
+            create_ap)   NEED_AUR_CREATE_AP=1;    PKGS_DEB+="$cmd ";        PKGS_RPM+="$cmd " ;;
             *)           PKGS_ARCH+="$cmd ";      PKGS_DEB+="$cmd ";        PKGS_RPM+="$cmd " ;;
         esac
     done
@@ -48,7 +50,14 @@ if [ ${#MISSING_CMDS[@]} -ne 0 ]; then
         echo "To install missing packages, run:"
         # Use ID_LIKE as a fallback if ID is too specific (e.g., garuda -> arch)
         case "${ID_LIKE:-$ID}" in
-            *arch*)   echo "  sudo pacman -S $PKGS_ARCH" ;;
+            *arch*)
+				if [ -n "$PKGS_ARCH" ]; then
+					echo "  Official repos: sudo pacman -S $PKGS_ARCH"
+				fi
+				if [ "$NEED_AUR_CREATE_AP" -eq 1 ]; then
+					echo "  AUR (required): yay -S linux-wifi-hotspot (or paru -S linux-wifi-hotspot)"
+				fi
+				;;
             *debian*) echo "  sudo apt install $PKGS_DEB" ;;
             *fedora*) echo "  sudo dnf install $PKGS_RPM" ;;
             *)        echo "  Please use your package manager to install: $PKGS_ARCH" ;;
@@ -215,8 +224,12 @@ systemctl daemon-reload
 
 echo
 echo "Installation complete."
-echo "When the charger is connected/disconnected, a desktop prompt will ask"
-echo "whether to start/stop the hotspot (falls back after 10s)."
+if [ "$AUTO_PROMPT" = "true" ]; then
+    echo "When the charger is connected/disconnected, a desktop prompt will ask"
+    echo "whether to start/stop the hotspot (falls back after 10s)."
+else
+    echo "Manual mode: use 'sudo fiero-hotspot start | stop' to start | stop the hotspot"
+fi
 echo "You can manually test it with: sudo systemctl start fiero-hotspot.service"
 
 # END OF FILE
