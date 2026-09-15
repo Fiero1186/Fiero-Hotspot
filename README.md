@@ -32,7 +32,7 @@ sudo ./install.sh
 | `hostapd` | 802.11 AP daemon (managed by `create_ap`) |
 | `dnsmasq` | DHCP/DNS server (managed by `create_ap`) |
 
-> **Building `create_ap` from source:** On Debian, Ubuntu, and Fedora, the upstream `create_ap` package is no longer maintained in distribution repositories. You must build from source using [oblique/create_ap](https://github.com/oblique/create_ap) or use the [lakinduakash/linux-wifi-hotspot](https://github.com/lakinduakash/linux-wifi-hotspot) fork. Arch Linux users can install `create_ap` directly from the AUR.
+> **Installing `create_ap`:** The original `create_ap` project is unmaintained. This project uses the maintained [lakinduakash/linux-wifi-hotspot](https://github.com/lakinduakash/linux-wifi-hotspot) fork, which provides the `create_ap` command. Install it via your package manager: **Arch** — `yay -S linux-wifi-hotspot` (or `paru`); **Debian/Ubuntu** — download the latest `.deb` from the [releases page](https://github.com/lakinduakash/linux-wifi-hotspot/releases); **other distros** — clone the repo and run `sudo make install`.
 
 ## Hardware Requirements
 

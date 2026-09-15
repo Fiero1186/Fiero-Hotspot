@@ -228,8 +228,8 @@ map_pkgs() {
   printf '%s|%s|%s|NEED=%s' "${PKGS_ARCH% }" "${PKGS_DEB% }" "${PKGS_RPM% }" "$NEED"
 }
 
-edge_assert_equal "Phase 5b.1: notify-send package mapping" "$(map_pkgs notify-send)" "libnotify|libnotify-bin|libnotify"
-edge_assert_equal "Phase 5b.2: pgrep package mapping" "$(map_pkgs pgrep)" "procps-ng|procps|procps-ng"
+edge_assert_equal "Phase 5b.1: notify-send package mapping" "$(map_pkgs notify-send)" "libnotify|libnotify-bin|libnotify|NEED=0"
+edge_assert_equal "Phase 5b.2: pgrep package mapping" "$(map_pkgs pgrep)" "procps-ng|procps|procps-ng|NEED=0"
 edge_assert_equal "Phase 5b.3: unknown command passes through" "$(map_pkgs some-cmd)" "some-cmd|some-cmd|some-cmd|NEED=0"
 edge_assert_equal "Phase 5b.4: create_ap not in any repo list, AUR flag set" "$(map_pkgs create_ap)" "|||NEED=1"
 
