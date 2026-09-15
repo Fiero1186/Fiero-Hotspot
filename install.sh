@@ -15,7 +15,7 @@ echo "=== Fiero Hotspot Installer ==="
 # ---------------------------------------------------------
 # 1. DEPENDENCY AUDIT (Distro-Aware)
 # ---------------------------------------------------------
-REQUIRED_CMDS=("create_ap" "hostapd" "dnsmasq" "iw" "iptables" "notify-send" "pgrep" "nmcli")
+REQUIRED_CMDS=("create_ap" "hostapd" "dnsmasq" "iw" "iptables" "notify-send" "pgrep" "pkill" "flock" "nmcli")
 MISSING_CMDS=()
 
 for cmd in "${REQUIRED_CMDS[@]}"; do
@@ -39,8 +39,9 @@ if [ ${#MISSING_CMDS[@]} -ne 0 ]; then
     for cmd in "${MISSING_CMDS[@]}"; do
         case "$cmd" in
             notify-send) PKGS_ARCH+="libnotify "; PKGS_DEB+="libnotify-bin "; PKGS_RPM+="libnotify " ;;
-            pgrep)       PKGS_ARCH+="procps-ng "; PKGS_DEB+="procps ";      PKGS_RPM+="procps-ng " ;;
-            create_ap)   NEED_AUR_CREATE_AP=1;    PKGS_DEB+="$cmd ";        PKGS_RPM+="$cmd " ;;
+            pgrep|pkill)  PKGS_ARCH+="procps-ng "; PKGS_DEB+="procps ";      PKGS_RPM+="procps-ng " ;;
+            flock)        PKGS_ARCH+="util-linux "; PKGS_DEB+="util-linux ";  PKGS_RPM+="util-linux " ;;
+            create_ap)   NEED_AUR_CREATE_AP=1 ;;
             *)           PKGS_ARCH+="$cmd ";      PKGS_DEB+="$cmd ";        PKGS_RPM+="$cmd " ;;
         esac
     done
@@ -51,19 +52,29 @@ if [ ${#MISSING_CMDS[@]} -ne 0 ]; then
         # Use ID_LIKE as a fallback if ID is too specific (e.g., garuda -> arch)
         case "${ID_LIKE:-$ID}" in
             *arch*)
-				if [ -n "$PKGS_ARCH" ]; then
-					echo "  Official repos: sudo pacman -S $PKGS_ARCH"
-				fi
-				if [ "$NEED_AUR_CREATE_AP" -eq 1 ]; then
-					echo "  AUR (required): yay -S linux-wifi-hotspot (or paru -S linux-wifi-hotspot)"
-				fi
-				;;
-            *debian*) echo "  sudo apt install $PKGS_DEB" ;;
-            *fedora*) echo "  sudo dnf install $PKGS_RPM" ;;
-            *)        echo "  Please use your package manager to install: $PKGS_ARCH" ;;
+                if [ -n "$PKGS_ARCH" ]; then
+                    echo "  Official repos: sudo pacman -S $PKGS_ARCH"
+                fi
+                if [ "$NEED_AUR_CREATE_AP" -eq 1 ]; then
+                    echo "  AUR (required): yay -S linux-wifi-hotspot (or paru -S linux-wifi-hotspot)"
+                fi
+                ;;
+            *debian*) if [ -n "$PKGS_DEB" ]; then echo "  sudo apt install $PKGS_DEB"; fi ;;
+            *fedora*) if [ -n "$PKGS_RPM" ]; then echo "  sudo dnf install $PKGS_RPM"; fi ;;
+            *)        if [ -n "$PKGS_ARCH" ]; then echo "  Please use your package manager to install: $PKGS_ARCH"; fi ;;
         esac
     else
-        echo "Please use your package manager to install: $PKGS_ARCH"
+        if [ -n "$PKGS_ARCH" ]; then
+            echo "Please use your package manager to install: $PKGS_ARCH"
+        fi
+    fi
+
+    if [ "$NEED_AUR_CREATE_AP" -eq 1 ] && [[ "${ID_LIKE:-$ID}" != *arch* ]]; then
+        echo ""
+        echo "  NOTE: 'create_ap' is dead upstream and is not packaged for this distro."
+        echo "  Install the maintained fork (provides create_ap):"
+        echo "    Debian/Ubuntu: .deb from https://github.com/lakinduakash/linux-wifi-hotspot/releases"
+        echo "    Other distros: git clone https://github.com/lakinduakash/linux-wifi-hotspot && sudo make install"
     fi
     exit 1
 fi
@@ -227,9 +238,11 @@ echo "Installation complete."
 if [ "$AUTO_PROMPT" = "true" ]; then
     echo "When the charger is connected/disconnected, a desktop prompt will ask"
     echo "whether to start/stop the hotspot (falls back after 10s)."
+    TEST_CMD="sudo systemctl start fiero-hotspot.service"
 else
-    echo "Manual mode: use 'sudo fiero-hotspot start | stop' to start | stop the hotspot"
+    echo "Manual mode: use 'sudo fiero-hotspot start' to start and 'sudo fiero-hotspot stop' to stop."
+    TEST_CMD="sudo fiero-hotspot start"
 fi
-echo "You can manually test it with: sudo systemctl start fiero-hotspot.service"
+echo "You can manually test it with: $TEST_CMD"
 
 # END OF FILE

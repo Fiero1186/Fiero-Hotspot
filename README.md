@@ -62,7 +62,7 @@ AP channel is inherited from the upstream connection's current channel at startu
 
 An active X11 or Wayland desktop session with a running notification daemon is required for the interactive D-Bus prompts (D-Bus session bus at `/run/user/<uid>/bus`). Without a desktop session, the installer and hotspot will still function, but the interactive action prompts (Start/Ignore/Keep Running) will not appear.
 
-The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses `nmcli` to query connection state and relies on NetworkManager's D-Bus interface for upstream association tracking.
+The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses `iw dev <iface> link` to monitor upstream Wi-Fi connectivity and relies on NetworkManager's D-Bus interface for upstream association tracking.
 
 ## Tested Hardware
 
@@ -141,6 +141,7 @@ File: `/etc/fiero-hotspot.conf`
 | `SUPPORTED_CHANNELS` | Comma-separated channel whitelist (auto-detected at install) |
 | `TARGET_USER` | User for notification routing |
 | `TARGET_UID` | UID of `TARGET_USER` |
+| `AUTO_PROMPT` | `true` for automatic D-Bus prompt on AC events, `false` for CLI-only control |
 
 ### Enable & Start
 
@@ -165,6 +166,7 @@ sudo fiero-hotspot stop           # Stop the hotspot daemon
 sudo fiero-hotspot status         # Show daemon state, AP interface, SSID, channel, AC power, client count
 sudo fiero-hotspot clients        # List connected devices (MAC, signal dBm, DHCP IP, hostname)
 fiero-hotspot version             # Show version (also: -v, --version) — no root required
+fiero-hotspot mode                # Toggle or set trigger mode (auto|manual)
 fiero-hotspot help                # Print usage menu (also: -h, --help, or no arguments)
 ```
 
@@ -173,6 +175,7 @@ fiero-hotspot help                # Print usage menu (also: -h, --help, or no ar
 ```
 === Fiero Hotspot Status ===
   Service    : active
+  Mode       : Auto (Prompt on AC)
   AP iface   : ap0
   SSID       : MyHotspot
   Channel    : 6 (2437 MHz)
@@ -212,7 +215,7 @@ Requires root and a valid `/etc/fiero-hotspot.conf` with `INTERFACE`, `TARGET_US
 
 ### Test Phases
 
-The harness executes **98 test assertions** across 10 phases:
+The harness executes **99 test assertions** across 10 phases:
 
 | Phase | Tests | Description |
 |-------|-------|-------------|

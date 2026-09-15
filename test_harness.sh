@@ -215,20 +215,23 @@ fi
 # 5b. Distro package name mapping (install.sh lines 30-54)
 map_pkgs() {
   local PKGS_ARCH="" PKGS_DEB="" PKGS_RPM=""
+  local NEED=0
   local cmd
   for cmd in "$@"; do
     case "$cmd" in
       notify-send) PKGS_ARCH+="libnotify "; PKGS_DEB+="libnotify-bin "; PKGS_RPM+="libnotify " ;;
       pgrep)       PKGS_ARCH+="procps-ng "; PKGS_DEB+="procps ";      PKGS_RPM+="procps-ng " ;;
+      create_ap)   NEED=1 ;;
       *)           PKGS_ARCH+="$cmd ";      PKGS_DEB+="$cmd ";        PKGS_RPM+="$cmd " ;;
     esac
   done
-  printf '%s|%s|%s' "${PKGS_ARCH% }" "${PKGS_DEB% }" "${PKGS_RPM% }"
+  printf '%s|%s|%s|NEED=%s' "${PKGS_ARCH% }" "${PKGS_DEB% }" "${PKGS_RPM% }" "$NEED"
 }
 
 edge_assert_equal "Phase 5b.1: notify-send package mapping" "$(map_pkgs notify-send)" "libnotify|libnotify-bin|libnotify"
 edge_assert_equal "Phase 5b.2: pgrep package mapping" "$(map_pkgs pgrep)" "procps-ng|procps|procps-ng"
-edge_assert_equal "Phase 5b.3: unknown command passes through" "$(map_pkgs some-cmd)" "some-cmd|some-cmd|some-cmd"
+edge_assert_equal "Phase 5b.3: unknown command passes through" "$(map_pkgs some-cmd)" "some-cmd|some-cmd|some-cmd|NEED=0"
+edge_assert_equal "Phase 5b.4: create_ap not in any repo list, AUR flag set" "$(map_pkgs create_ap)" "|||NEED=1"
 
 # 5c. Password validation (install.sh lines 107-124)
 validate_password() {
