@@ -352,6 +352,7 @@ case "${1:-}" in
             else
                 echo "AUTO_PROMPT='${val}'" >> "$cfg"
             fi
+            chown root:"$TARGET_USER" "$cfg" 2>/dev/null || true
             chmod 640 "$cfg" 2>/dev/null || true
         }
         case "${2:-}" in
