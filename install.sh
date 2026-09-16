@@ -15,7 +15,7 @@ echo "=== Fiero Hotspot Installer ==="
 # ---------------------------------------------------------
 # 1. DEPENDENCY AUDIT (Distro-Aware)
 # ---------------------------------------------------------
-REQUIRED_CMDS=("create_ap" "hostapd" "dnsmasq" "iw" "iptables" "notify-send" "pgrep" "pkill" "flock" "nmcli")
+REQUIRED_CMDS=("create_ap" "hostapd" "dnsmasq" "iw" "iptables" "notify-send" "pgrep" "pkill" "flock")
 MISSING_CMDS=()
 
 for cmd in "${REQUIRED_CMDS[@]}"; do

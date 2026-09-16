@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v1.2.0-blue)
+![Version](https://img.shields.io/badge/version-v1.3.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 ## Overview
@@ -25,7 +25,7 @@ sudo ./install.sh
 | `iw` | Wi-Fi interface enumeration and channel detection |
 | `util-linux` | `flock(1)` for instance-level locking |
 | `systemd` | Unit management (`fiero-hotspot.service`) |
-| `NetworkManager` | Upstream Wi-Fi association and `nmcli` utilities |
+| `NetworkManager` | Upstream Wi-Fi association |
 | `libnotify` | Desktop notifications via `notify-send` |
 | `procps-ng` | `pgrep`/`pkill` for process management |
 | `iptables` | NAT/firewall rules (required by `create_ap`) |
@@ -62,7 +62,7 @@ AP channel is inherited from the upstream connection's current channel at startu
 
 An active X11 or Wayland desktop session with a running notification daemon is required for the interactive D-Bus prompts (D-Bus session bus at `/run/user/<uid>/bus`). Without a desktop session, the installer and hotspot will still function, but the interactive action prompts (Start/Ignore/Keep Running) will not appear.
 
-The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses `iw dev <iface> link` to monitor upstream Wi-Fi connectivity and relies on NetworkManager's D-Bus interface for upstream association tracking.
+The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses `iw dev <iface> link` to monitor upstream Wi-Fi connectivity and association state.
 
 ## Tested Hardware
 
@@ -158,15 +158,15 @@ sudo systemctl stop fiero-hotspot.service
 
 ### CLI Commands
 
-`fiero-hotspot` doubles as a user-facing CLI tool. Commands that query hardware or system state (`start`, `stop`, `status`, `clients`) require root.
+`fiero-hotspot` doubles as a user-facing CLI tool. Commands that query hardware or system state (`start`, `stop`, `status`, `clients`, `mode`) require root.
 
 ```bash
 sudo fiero-hotspot start          # Start the hotspot daemon
 sudo fiero-hotspot stop           # Stop the hotspot daemon
 sudo fiero-hotspot status         # Show daemon state, AP interface, SSID, channel, AC power, client count
 sudo fiero-hotspot clients        # List connected devices (MAC, signal dBm, DHCP IP, hostname)
+sudo fiero-hotspot mode           # Toggle or set trigger mode (auto|manual)
 fiero-hotspot version             # Show version (also: -v, --version) — no root required
-fiero-hotspot mode                # Toggle or set trigger mode (auto|manual)
 fiero-hotspot help                # Print usage menu (also: -h, --help, or no arguments)
 ```
 
@@ -215,13 +215,13 @@ Requires root and a valid `/etc/fiero-hotspot.conf` with `INTERFACE`, `TARGET_US
 
 ### Test Phases
 
-The harness executes **99 test assertions** across 10 phases:
+The harness executes **99 test assertions** across all phases:
 
 | Phase | Tests | Description |
 |-------|-------|-------------|
 | **4** | 8 | `shquote()` unit tests: single-quote escaping for shell-special characters (`'`, `$`, backticks, backslash, double quotes) |
 | **5a** | 3 | Dependency detection logic: all present, one missing, multiple missing |
-| **5b** | 3 | Distro package name mapping: `notify-send` → `libnotify`/`libnotify-bin`, `pgrep` → `procps-ng`/`procps` |
+| **5b** | 4 | Distro package name mapping: `notify-send` → `libnotify`/`libnotify-bin`, `pgrep` → `procps-ng`/`procps`, AUR create_ap |
 | **5c** | 4 | Password validation: length floor, mismatch rejection, special character acceptance |
 | **5d** | 2 | Interface detection: non-AP interface extraction, AP-only interface rejection |
 | **5e** | 2 | RF channel parsing: full frequency listing, disabled/no-IR/radar exclusion |
@@ -229,6 +229,7 @@ The harness executes **99 test assertions** across 10 phases:
 | **6b** | 5 | Cooldown debounce: no state file, same-state window, window expiry, state-flip process kill, malformed file |
 | **6c** | 8 | Frequency-to-channel conversion: 2.4 GHz (ch 1-11), channel 14 (2484 MHz), 5 GHz (ch 36-48, 149) |
 | **6d** | 2 | Channel whitelist validation against `SUPPORTED_CHANNELS` |
+| **6e** | 1 | Automatic prompt setting: `AUTO_PROMPT=false` early exit validation |
 | **7a** | 2 | Instance lock (`flock`): second invocation rejected, exit 0 with log message |
 | **7b** | 4 | Cleanup function with mocked commands: `SKIP_CLEANUP` bypass, `ap*` interface removal, `p2p-dev-*` preservation, `/tmp/create_ap*` removal |
 | **7c** | 2 | Channel validation in hotspot context: supported proceed, unsupported abort |
@@ -236,10 +237,10 @@ The harness executes **99 test assertions** across 10 phases:
 | **8a** | 3 | Config file sourcing: valid values, escaped special chars, full SSID with embedded quotes/dollar/backticks |
 | **8b** | 2 | Config file permissions post-install: mode 640, root ownership |
 | **8c** | 1 | Missing config file error path |
-| **9a** | 11 | Unprivileged execution: exit 1 + correct error message for `start`/`stop`/`status`/`clients` as `$TARGET_USER`; exit 0 + version output for `version`; no `Permission denied` or `flock` error leaks |
-| **9b** | 13 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; `version`/`-v`/`--version` → exit 0 + current version string; unknown subcommand → exit 1 with `[ERR]` |
-| **9c** | 5 | Cleanup trap isolation: `/tmp/create_ap*` marker file survives `help`, `bogus`, `status`, `clients`, `version` (validates `SKIP_CLEANUP=1`) |
-| **9d** | 3 | Status output format: root exit 0, contains `Service` field, no duplicate `inactive` lines |
+| **9a** | 13 | Unprivileged execution: exit 1 + correct error message for `start`/`stop`/`status`/`clients`/`mode` as `$TARGET_USER`; exit 0 + version output for `version`; no `Permission denied` or `flock` error leaks |
+| **9b** | 17 | CLI dispatcher: no-args/`-h`/`--help`/`help` → exit 0 with usage; `version`/`-v`/`--version` → exit 0 + current version string; `mode` auto/manual toggling and aliases; unknown subcommand → exit 1 with `[ERR]` |
+| **9c** | 6 | Cleanup trap isolation: `/tmp/create_ap*` marker file survives `help`, `bogus`, `status`, `clients`, `version`, `mode` (validates `SKIP_CLEANUP=1`) |
+| **9d** | 4 | Status output format: root exit 0, contains `Service` and `Mode` fields, no duplicate `inactive` lines |
 
 ### Lifecycle Benchmarks (hardware-dependent)
 

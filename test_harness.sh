@@ -70,10 +70,16 @@ echo "======================================================================"
 # ------------------------------------------------------------------------------
 DBUS_MONITOR_PID=""
 EDGE_TMP_DIRS=()
+CONFIG_BACKUP=""
 
 cleanup() {
   local exit_code=$?
   set +e
+  if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" ]]; then
+    echo "[INFO] Restoring original /etc/fiero-hotspot.conf from backup..."
+    cp -f "$CONFIG_BACKUP" /etc/fiero-hotspot.conf 2>/dev/null || true
+    rm -f "$CONFIG_BACKUP" 2>/dev/null || true
+  fi
   if [[ -n "${DBUS_MONITOR_PID:-}" ]]; then
     echo "[INFO] Terminating background D-Bus monitor (PID: $DBUS_MONITOR_PID)..."
     pkill -P "$DBUS_MONITOR_PID" 2>/dev/null || true
@@ -912,7 +918,8 @@ else
 fi
 
 # 9b-new2. mode subcommand: config file updates
-MODE_CFG_ORIG=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null || echo "")
+CONFIG_BACKUP="$EDGE_TMP_DIR/fiero-hotspot.conf.bak"
+cp -f /etc/fiero-hotspot.conf "$CONFIG_BACKUP" 2>/dev/null || true
 
 "$SCRIPT_UNDER_TEST" mode auto >/dev/null 2>&1
 MODE_AUTO_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
@@ -946,11 +953,11 @@ else
   edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" FAIL
 fi
 
-# Restore original AUTO_PROMPT value
-if [[ -n "$MODE_CFG_ORIG" ]]; then
-  sed -i "s/^AUTO_PROMPT=.*/$MODE_CFG_ORIG/" /etc/fiero-hotspot.conf
-else
-  sed -i "/^AUTO_PROMPT=/d" /etc/fiero-hotspot.conf 2>/dev/null || true
+# Restore original config file
+if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" ]]; then
+  cp -f "$CONFIG_BACKUP" /etc/fiero-hotspot.conf 2>/dev/null || true
+  rm -f "$CONFIG_BACKUP" 2>/dev/null || true
+  CONFIG_BACKUP=""
 fi
 
 if [[ "$HELP_BOGUS_RC" -eq 1 ]]; then
@@ -1078,7 +1085,7 @@ else
   systemctl start fiero-hotspot.service
 
   # Poll every 0.5s for up to 15s
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     AP_IFACE=$(iw dev | awk '$1=="Interface" && $2~/^ap[0-9]+/ {print $2}' | head -n1)
     if [[ -n "$AP_IFACE" ]] && pgrep -f "hostapd.*/tmp/create_ap" >/dev/null 2>&1; then
       END_TS=$(date +%s%N)
@@ -1123,7 +1130,7 @@ else
   systemctl stop fiero-hotspot.service
 
   # Poll every 0.5s for up to 10s
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     REMAINING_IFACE=$(iw dev | awk '$1=="Interface" && $2~/^ap[0-9]+/ {print $2}' | head -n1)
     if [[ -z "$REMAINING_IFACE" ]]; then
       STOP_END_TS=$(date +%s%N)

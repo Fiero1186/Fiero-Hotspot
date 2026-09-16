@@ -42,7 +42,13 @@ fi
 INTERFACE="${INTERFACE:-$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')}"
 SUPPORTED_CHANNELS="${SUPPORTED_CHANNELS:-1,2,3,4,5,6,7,8,9,10,11,36,40,44,48}"
 
-export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+USER_BUS="/run/user/$(id -u)/bus"
+if [ ! -S "$USER_BUS" ]; then
+    echo "[WARN] D-Bus session bus not found at $USER_BUS; skipping desktop notification." >&2
+    exit 0
+fi
+DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_BUS"
+export DBUS_SESSION_BUS_ADDRESS
 STATE_FILE="/run/user/$(id -u)/fiero-prompt.state"
 COOLDOWN=11
 
@@ -91,9 +97,12 @@ if [ -f "$STATE_FILE" ]; then
         if [ "$old_state" != "$current_state" ]; then
             # Power state flipped while a prompt was pending -> kill it and its
             # notify-send child so the stale fallback never executes.
-            if [ -d "/proc/$old_pid" ] && grep -q "fiero" "/proc/$old_pid/cmdline" 2>/dev/null; then
-                pkill -P "$old_pid" 2>/dev/null || true
-                kill "$old_pid" 2>/dev/null || true
+            if [ -d "/proc/$old_pid" ]; then
+                old_comm=$(cat "/proc/$old_pid/comm" 2>/dev/null || true)
+                if [[ "$old_comm" == fiero-prompt* ]]; then
+                    pkill -P "$old_pid" 2>/dev/null || true
+                    kill "$old_pid" 2>/dev/null || true
+                fi
             fi
         fi
     fi

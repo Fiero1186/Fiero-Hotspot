@@ -23,7 +23,12 @@ SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
-VERSION="1.2.0"
+VERSION="1.3.0"
+
+# --- Utility Functions ---
+escape_regex() {
+    printf '%s' "$1" | sed 's/[][\.|$(){}?+*^\\-]/\\&/g'
+}
 
 # --- Logging Setup ---
 log() {
@@ -48,7 +53,7 @@ notify() {
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
 }
 
-for cmd in iw pgrep pkill create_ap nmcli; do
+for cmd in iw pgrep pkill create_ap; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         log "ERR" "Required command not found: $cmd. Run install.sh first."
         exit 1
@@ -106,7 +111,7 @@ cleanup() {
         kill "$CREATE_AP_PID" 2>/dev/null || true
     fi
     local escaped_if
-    escaped_if=$(printf '%s' "$INTERFACE" | sed 's/[.[\*^$()+?{|]/\\&/g')
+    escaped_if=$(escape_regex "$INTERFACE")
     pkill -f "create_ap.*$escaped_if" 2>/dev/null || true
     for dev in $(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2}'); do
 		ip link set dev "$dev" down 2>/dev/null || true
@@ -135,7 +140,9 @@ start_hotspot() {
     exec 9>/run/fiero-hotspot.lock
     flock -n 9 || { log "INFO" "Another instance is running. Exiting."; SKIP_CLEANUP=1; exit 0; }
 
-    if pgrep -x create_ap >/dev/null && iw dev | grep -qE '^\s*Interface ap[0-9]'; then
+    local escaped_if
+    escaped_if=$(escape_regex "$INTERFACE")
+    if pgrep -f "create_ap.*$escaped_if" >/dev/null && iw dev | grep -qE '^\s*Interface ap[0-9]'; then
         log "INFO" "Hotspot already running. Skipping."
         SKIP_CLEANUP=1
         exit 0
@@ -164,6 +171,13 @@ start_hotspot() {
     create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" &
     CREATE_AP_PID=$!
 
+    sleep 0.5
+    if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+        log "ERR" "create_ap process exited immediately after launch."
+        cleanup
+        exit 1
+    fi
+
     for ((attempt = 1; attempt <= 8; attempt++)); do
         if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
             break
@@ -173,20 +187,67 @@ start_hotspot() {
             notify "Hotspot is live! SSID: $SSID"
             local drop_counter=0
             local max_drops=3
+            local last_channel="$CHANNEL"
             rm -f "$SHUTDOWN_LOCK"
             while true; do
                 if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-					if [ -f "$SHUTDOWN_LOCK" ]; then
-						rm -f "$SHUTDOWN_LOCK"
-						break
-					fi
-					log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
-					notify "Hotspot stopped: create_ap process exited"
-					break
-				fi
+                    if [ -f "$SHUTDOWN_LOCK" ]; then
+                        rm -f "$SHUTDOWN_LOCK"
+                        break
+                    fi
+                    log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
+                    notify "Hotspot stopped: create_ap process exited"
+                    break
+                fi
 
                 if iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
                     drop_counter=0
+
+                    local current_ch
+                    current_ch=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
+                    if [ -n "$current_ch" ] && [ "$current_ch" != "$last_channel" ]; then
+                        log "WARN" "Upstream channel changed ($last_channel -> $current_ch). Re-evaluating AP..."
+                        if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
+                            log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
+                            notify "Hotspot stopped: channel $current_ch unsupported"
+                            break
+                        fi
+
+                        notify "Hotspot restarting: channel changed to $current_ch"
+                        cleanup
+                        CHANNEL="$current_ch"
+                        last_channel="$current_ch"
+
+                        create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" &
+                        CREATE_AP_PID=$!
+
+                        sleep 0.5
+                        if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+                            log "ERR" "create_ap failed to restart on channel $CHANNEL."
+                            notify "Hotspot stopped: create_ap restart failed"
+                            break
+                        fi
+
+                        local reinit_ok=0
+                        for ((reinit_attempt = 1; reinit_attempt <= 8; reinit_attempt++)); do
+                            if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+                                break
+                            fi
+                            if iw dev 2>/dev/null | grep -qE '^\s*Interface ap[0-9]+' && pgrep -f "hostapd.*/tmp/create_ap" >/dev/null; then
+                                reinit_ok=1
+                                log "INFO" "create_ap successfully restarted on channel $CHANNEL (pid $CREATE_AP_PID)."
+                                notify "Hotspot is live on channel $CHANNEL!"
+                                break
+                            fi
+                            sleep 1
+                        done
+
+                        if [ "$reinit_ok" -ne 1 ]; then
+                            log "ERR" "Failed to bring up AP on channel $CHANNEL within 8s."
+                            notify "Hotspot stopped: AP re-init failed"
+                            break
+                        fi
+                    fi
                 else
                     drop_counter=$((drop_counter + 1))
                     if [ "$drop_counter" -ge "$max_drops" ]; then

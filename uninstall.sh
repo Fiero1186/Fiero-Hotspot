@@ -32,6 +32,11 @@ echo "Removed /etc/systemd/system/fiero-hotspot.service"
 rm -f /etc/udev/rules.d/99-fiero-hotspot.rules
 echo "Removed /etc/udev/rules.d/99-fiero-hotspot.rules"
 
+rm -f /run/fiero-hotspot.lock /run/fiero-shutting-down.lock
+rm -f /run/user/*/fiero-prompt.lock /run/user/*/fiero-prompt.state 2>/dev/null || true
+find /tmp -maxdepth 1 -name "create_ap*" -uid 0 ! -type l -exec rm -rf {} + 2>/dev/null || true
+echo "Cleaned runtime state and lock files"
+
 udevadm control --reload-rules
 systemctl daemon-reload
 
