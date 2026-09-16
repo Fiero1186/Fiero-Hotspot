@@ -34,6 +34,8 @@ sudo ./install.sh
 
 > **Installing `create_ap`:** The original `create_ap` project is unmaintained. This project uses the maintained [lakinduakash/linux-wifi-hotspot](https://github.com/lakinduakash/linux-wifi-hotspot) fork, which provides the `create_ap` command. Install it via your package manager: **Arch** — `yay -S linux-wifi-hotspot` (or `paru`); **Debian/Ubuntu** — download the latest `.deb` from the [releases page](https://github.com/lakinduakash/linux-wifi-hotspot/releases); **other distros** — clone the repo and run `sudo make install`.
 
+> **Note:** `nmcli` is not required at runtime. Upstream connection and frequency state are queried directly via `iw`.
+
 ## Hardware Requirements
 
 ### Wi-Fi Concurrency
@@ -295,6 +297,12 @@ The upstream client and AP share the same physical radio. On a single-radio adap
 
 The AP channel is inherited from the upstream connection's current channel and cannot be changed independently (`#channels <= 1` constraint). Cross-band repeating (e.g., receiving on 5 GHz and broadcasting on 2.4 GHz) is not supported.
 
+### Upstream Channel Drift Recovery
+
+When the upstream Wi-Fi connection changes channel (e.g., due to roaming or AP steering), the daemon detects the drift via periodic `iw dev $INTERFACE info` polling (every 2 seconds) and restarts the AP on the new channel within an 8-second re-initialization window. The AP is cleaned up and relaunched with the updated channel via `create_ap`.
+
+This recovery is **best-effort and structurally verified**: single-channel-lock hardware (`#channels <= 1`) cannot retune across bands (e.g., 5 GHz → 2.4 GHz). If the new channel falls outside `SUPPORTED_CHANNELS`, the daemon logs the event, notifies the user, and terminates safely rather than attempting an impossible retune.
+
 ### DFS & NO-IR Channel Safety
 
 Channels flagged as DFS (52–144) or NO-IR by the regulatory domain are excluded from the supported channel list. If the upstream connection is on such a channel, the hotspot will refuse to start.
@@ -310,6 +318,32 @@ The daemon is tightly coupled to `systemd` (service unit), `udev` (power-supply 
 ### Bare-Metal Only (No Virtual Machine Support)
 
 Requires a physical wireless adapter exposing an `nl80211` interface capable of simultaneous AP and Station modes. Standard virtual machine hypervisors (VirtualBox, VMware, QEMU/KVM) emulate virtualized Ethernet adapters (`virtio`, `e1000`) and cannot create `mac80211` virtual access points. Running inside a VM will fail unless the physical PCIe or USB Wi-Fi card is passed through directly to the guest.
+
+### Headless & SSH Session Behavior
+
+`fiero-prompt.sh` exits cleanly with a warning to stderr when `/run/user/$UID/bus` is absent; no desktop notification appears. This occurs on headless boots, SSH sessions, and non-PAM configurations where no D-Bus session bus is created. The hotspot can still be controlled manually via `sudo fiero-hotspot start/stop` — only the interactive desktop prompt is skipped.
+
+## Systemd Hardening Rationale
+
+The systemd service achieves a **5.7 MEDIUM** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 8.2 EXPOSED in v1.2.0. The remaining 5.7 score is the architectural floor for this release — three directives are intentionally omitted because they break essential functionality:
+
+### NoNewPrivileges=true (omitted)
+
+Required for PAM session establishment. The daemon calls `sudo -u $TARGET_USER notify-send` to route desktop notifications to the logged-in user's D-Bus session. `NoNewPrivileges=true` blocks PAM's `pam_open_session`, causing `Permission denied` on every notification attempt.
+
+### RestrictRealtime=true (omitted)
+
+Locks `RLIMIT_RTPRIO=0`, conflicting with user realtime audio limits configured in `/etc/security/limits.conf`. Removing this directive allows PAM's resource limit stack to function correctly for the target user.
+
+### ProtectKernelTunables=true (omitted)
+
+Mounts `/proc/sys` read-only. `create_ap` writes to `net.ipv4.ip_forward` during NAT setup. A read-only `/proc/sys` causes the NAT bridge to fail silently, breaking the core hotspot functionality.
+
+### Why Root Execution and CAP_NET_ADMIN Are Required
+
+- **Root**: NAT routing via `iptables` requires root privileges. The service runs as root and uses `sudo -u $TARGET_USER` to drop privileges for user-facing operations.
+- **CAP_NET_ADMIN**: Required for `iptables` rule management and `create_ap` network namespace operations. This capability cannot be replaced with user-level alternatives for NAT.
+- **D-Bus SASL**: Root cannot connect directly to `/run/user/$UID/bus` because D-Bus validates the connecting UID via SASL EXTERNAL authentication. The daemon routes through `sudo -u $TARGET_USER` to match the socket owner's UID.
 
 ## Developer Notes
 
@@ -334,7 +368,7 @@ I will do occasional updates to this project whenever I am free to do so, but pl
 
 ### Built with AI, Verified with Ironclad Constraints
 The implementation was vibe-coded using LLMs via OpenCode, under strict systems engineering constraints:
-- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 98-pass bash test harness (`test_harness.sh`).
+- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 99-pass bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
 - **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.

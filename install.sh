@@ -244,5 +244,7 @@ else
     TEST_CMD="sudo fiero-hotspot start"
 fi
 echo "You can manually test it with: $TEST_CMD"
+echo ""
+echo "Hardened systemd unit installed. Inspect exposure with: systemd-analyze security fiero-hotspot.service"
 
 # END OF FILE
