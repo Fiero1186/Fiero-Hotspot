@@ -20,14 +20,49 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
 SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
+UPSTREAM_GRACE=15
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 # --- Utility Functions ---
 escape_regex() {
     printf '%s' "$1" | sed 's/[][\.|$(){}?+*^\\-]/\\&/g'
+}
+
+freq_to_channel() {
+    local f="${1%.*}" ch=""
+    if [ "$f" = "2484" ]; then
+        ch=14
+    elif [ "$f" -ge 2407 ] 2>/dev/null && [ "$f" -le 2472 ] 2>/dev/null; then
+        ch=$(((f - 2407) / 5))
+    elif [ "$f" -ge 5000 ] 2>/dev/null; then
+        ch=$(((f - 5000) / 5))
+    fi
+    printf '%s' "$ch"
+}
+
+get_channel() {
+    local line freq
+    line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
+    [ -n "$line" ] || return 1
+    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
+    [ -n "$FREQ" ] || return 1
+    CH=$(freq_to_channel "$FREQ")
+    [ -n "$CH" ]
+}
+
+refresh_supported_channels() {
+    local phy fresh=""
+    phy=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2; exit}')
+    if [ -n "$phy" ]; then
+        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+    fi
+    if [ -n "$fresh" ]; then
+        SUPPORTED_CHANNELS="$fresh"
+        log "INFO" "Using live channel list: $SUPPORTED_CHANNELS"
+    fi
 }
 
 # --- Logging Setup ---
@@ -85,15 +120,15 @@ if [ -z "${SUPPORTED_CHANNELS:-}" ]; then
 fi
 
 ac_online() {
-    if [ -n "${POWER_SUPPLY:-}" ] \
-        && [ -f "/sys/class/power_supply/$POWER_SUPPLY/online" ] \
-        && [ "$(cat "/sys/class/power_supply/$POWER_SUPPLY/online" 2>/dev/null)" = "1" ]; then
+    if [ -n "${POWER_SUPPLY:-}" ] &&
+        [ -f "/sys/class/power_supply/$POWER_SUPPLY/online" ] &&
+        [ "$(cat "/sys/class/power_supply/$POWER_SUPPLY/online" 2>/dev/null)" = "1" ]; then
         return 0
     fi
     local supply
     for supply in /sys/class/power_supply/*; do
-        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" \
-            && [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
+        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" &&
+            [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
             return 0
         fi
     done
@@ -114,7 +149,7 @@ cleanup() {
     escaped_if=$(escape_regex "$INTERFACE")
     pkill -f "create_ap.*$escaped_if" 2>/dev/null || true
     for dev in $(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2}'); do
-		ip link set dev "$dev" down 2>/dev/null || true
+        ip link set dev "$dev" down 2>/dev/null || true
         iw dev "$dev" del 2>/dev/null || true
         ip link delete "$dev" 2>/dev/null || true
     done
@@ -127,8 +162,7 @@ trap 'exit 130' INT
 trap 'exit 0' TERM
 
 detect_channel() {
-    CHANNEL=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
-    [ -n "$CHANNEL" ]
+    get_channel "$INTERFACE" && CHANNEL="$CH"
 }
 
 start_hotspot() {
@@ -138,7 +172,11 @@ start_hotspot() {
         exit 1
     fi
     exec 9>/run/fiero-hotspot.lock
-    flock -n 9 || { log "INFO" "Another instance is running. Exiting."; SKIP_CLEANUP=1; exit 0; }
+    flock -n 9 || {
+        log "INFO" "Another instance is running. Exiting."
+        SKIP_CLEANUP=1
+        exit 0
+    }
 
     local escaped_if
     escaped_if=$(escape_regex "$INTERFACE")
@@ -149,6 +187,8 @@ start_hotspot() {
     fi
 
     log "INFO" "Starting hotspot process..."
+
+    refresh_supported_channels
 
     if ! detect_channel; then
         log "ERR" "Could not detect WiFi channel on $INTERFACE. Aborting."
@@ -185,14 +225,15 @@ start_hotspot() {
         if iw dev 2>/dev/null | grep -qE '^\s*Interface ap[0-9]+' && pgrep -f "hostapd.*/tmp/create_ap" >/dev/null; then
             log "INFO" "create_ap is live (pid $CREATE_AP_PID, AP interface up)."
             notify "Hotspot is live! SSID: $SSID"
-            local drop_counter=0
-            local max_drops=3
             local last_channel="$CHANNEL"
+            local down_since=""
+            local poll_int=2
             rm -f "$SHUTDOWN_LOCK"
             while true; do
                 if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
                     if [ -f "$SHUTDOWN_LOCK" ]; then
                         rm -f "$SHUTDOWN_LOCK"
+                        log "WARN" "create_ap exited during manual stop; treating as clean stop."
                         break
                     fi
                     log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
@@ -200,11 +241,17 @@ start_hotspot() {
                     break
                 fi
 
-                if iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
-                    drop_counter=0
+                local up_uptime link_out link_rc
+                up_uptime=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
+                link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
+                link_rc=$?
 
-                    local current_ch
-                    current_ch=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
+                if [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Connected to"; then
+                    down_since=""
+                    poll_int=2
+
+                    local current_ch=""
+                    if get_channel "$INTERFACE"; then current_ch="$CH"; fi
                     if [ -n "$current_ch" ] && [ "$current_ch" != "$last_channel" ]; then
                         log "WARN" "Upstream channel changed ($last_channel -> $current_ch). Re-evaluating AP..."
                         if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
@@ -218,7 +265,7 @@ start_hotspot() {
                         CHANNEL="$current_ch"
                         last_channel="$current_ch"
 
-                        create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" &
+                        create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" 9>&- &
                         CREATE_AP_PID=$!
 
                         sleep 0.5
@@ -248,16 +295,24 @@ start_hotspot() {
                             break
                         fi
                     fi
-                else
-                    drop_counter=$((drop_counter + 1))
-                    if [ "$drop_counter" -ge "$max_drops" ]; then
-                        log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
-                        notify "Hotspot stopped: upstream Wi-Fi disconnected"
-                        break
+                elif [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Not connected"; then
+                    poll_int=1
+                    if [ -z "$down_since" ]; then
+                        down_since="$up_uptime"
+                    fi
+                    if [ $((up_uptime - down_since)) -ge "$UPSTREAM_GRACE" ]; then
+                        sleep 2
+                        link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
+                        if ! printf '%s' "$link_out" | grep -q "Connected to"; then
+                            log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
+                            notify "Hotspot stopped: upstream Wi-Fi disconnected"
+                            break
+                        fi
+                        down_since=""
                     fi
                 fi
 
-                sleep 2
+                sleep "$poll_int"
             done
             cleanup
             return 0
@@ -302,9 +357,13 @@ status_hotspot() {
     ap_iface="${ap_iface:-none}"
 
     if [ "$ap_iface" != "none" ]; then
-        ap_channel=$(iw dev "$ap_iface" info 2>/dev/null | awk '/channel/{print $2; exit}')
-        ap_freq=$(iw dev "$ap_iface" link 2>/dev/null | awk '/freq/{print $2; exit}')
-        client_count=$(iw dev "$ap_iface" station dump 2>/dev/null | grep -c "^Station " || echo "0")
+        ap_channel=""
+        ap_freq=""
+        if get_channel "$ap_iface"; then
+            ap_channel="$CH"
+            ap_freq="$FREQ"
+        fi
+        client_count=$(iw dev "$ap_iface" station dump 2>/dev/null | grep -c "^Station ")
     else
         ap_channel="-"
         ap_freq="-"
@@ -365,7 +424,7 @@ clients_hotspot() {
             if [ -n "$hostname" ] && [ "$hostname" != "*" ]; then
                 mac_to_host["$mac"]="$hostname"
             fi
-        done < "$lease_file"
+        done <"$lease_file"
     done
 
     local station_output
@@ -390,91 +449,91 @@ clients_hotspot() {
             local host="${mac_to_host[$current_mac]:--}"
             printf "  %-17s %-10s %-15s %s\n" "$current_mac" "${signal} dBm" "$ip" "$host"
         fi
-    done <<< "$station_output"
+    done <<<"$station_output"
 }
 
 case "${1:-}" in
-    start)   start_hotspot ;;
-    stop)    stop_hotspot ;;
-    status)  status_hotspot ;;
-    clients) clients_hotspot ;;
-    mode|toggle)
-        SKIP_CLEANUP=1
-        if [ "$EUID" -ne 0 ]; then
-            log "ERR" "Mode toggle requires root. Run: sudo fiero-hotspot mode"
-            exit 1
+start) start_hotspot ;;
+stop) stop_hotspot ;;
+status) status_hotspot ;;
+clients) clients_hotspot ;;
+mode | toggle)
+    SKIP_CLEANUP=1
+    if [ "$EUID" -ne 0 ]; then
+        log "ERR" "Mode toggle requires root. Run: sudo fiero-hotspot mode"
+        exit 1
+    fi
+    cfg="/etc/fiero-hotspot.conf"
+    current="${AUTO_PROMPT:-true}"
+    update_auto_prompt() {
+        local val="$1"
+        if grep -q '^AUTO_PROMPT=' "$cfg" 2>/dev/null; then
+            sed -i "s/^AUTO_PROMPT=.*/AUTO_PROMPT='${val}'/" "$cfg"
+        else
+            echo "AUTO_PROMPT='${val}'" >>"$cfg"
         fi
-        cfg="/etc/fiero-hotspot.conf"
-        current="${AUTO_PROMPT:-true}"
-        update_auto_prompt() {
-            local val="$1"
-            if grep -q '^AUTO_PROMPT=' "$cfg" 2>/dev/null; then
-                sed -i "s/^AUTO_PROMPT=.*/AUTO_PROMPT='${val}'/" "$cfg"
-            else
-                echo "AUTO_PROMPT='${val}'" >> "$cfg"
-            fi
-            chown root:"$TARGET_USER" "$cfg" 2>/dev/null || true
-            chmod 640 "$cfg" 2>/dev/null || true
-        }
-        case "${2:-}" in
-            auto|enable|on)
-                update_auto_prompt 'true'
-                log "INFO" "Auto-prompt enabled."
-                ;;
-            manual|disable|off)
+        chown root:"$TARGET_USER" "$cfg" 2>/dev/null || true
+        chmod 640 "$cfg" 2>/dev/null || true
+    }
+    case "${2:-}" in
+    auto | enable | on)
+        update_auto_prompt 'true'
+        log "INFO" "Auto-prompt enabled."
+        ;;
+    manual | disable | off)
+        update_auto_prompt 'false'
+        log "INFO" "Auto-prompt disabled (manual mode)."
+        ;;
+    "")
+        if [ "$current" = "true" ]; then
+            printf "Current mode: Auto (Prompt on AC)\n"
+            read -rp "Switch to Manual? [y/N]: " ans
+        else
+            printf "Current mode: Manual (CLI only)\n"
+            read -rp "Switch to Auto? [y/N]: " ans
+        fi
+        case "${ans}" in
+        [yY] | [yY][eE][sS])
+            if [ "$current" = "true" ]; then
                 update_auto_prompt 'false'
-                log "INFO" "Auto-prompt disabled (manual mode)."
-                ;;
-            "")
-                if [ "$current" = "true" ]; then
-                    printf "Current mode: Auto (Prompt on AC)\n"
-                    read -rp "Switch to Manual? [y/N]: " ans
-                else
-                    printf "Current mode: Manual (CLI only)\n"
-                    read -rp "Switch to Auto? [y/N]: " ans
-                fi
-                case "${ans}" in
-                    [yY]|[yY][eE][sS])
-                        if [ "$current" = "true" ]; then
-                            update_auto_prompt 'false'
-                            log "INFO" "Switched to manual mode."
-                        else
-                            update_auto_prompt 'true'
-                            log "INFO" "Switched to auto mode."
-                        fi
-                        ;;
-                    *)
-                        log "INFO" "No change."
-                        ;;
-                esac
-                ;;
-            *)
-                log "ERR" "Unknown mode: '$2'. Use 'auto' or 'manual'."
-                exit 1
-                ;;
+                log "INFO" "Switched to manual mode."
+            else
+                update_auto_prompt 'true'
+                log "INFO" "Switched to auto mode."
+            fi
+            ;;
+        *)
+            log "INFO" "No change."
+            ;;
         esac
         ;;
-    version|-v|--version)
-        SKIP_CLEANUP=1
-        printf "fiero-hotspot v%s\n" "$VERSION"
-        ;;
-    help|-h|--help|"")
-        SKIP_CLEANUP=1
-        printf "Usage: fiero-hotspot {start|stop|status|clients|mode|version|help}\n"
-        printf "\n"
-        printf "  start    Start the hotspot daemon\n"
-        printf "  stop     Stop the hotspot daemon\n"
-        printf "  status   Show hotspot status dashboard\n"
-        printf "  clients  List connected clients\n"
-        printf "  mode     Toggle or set trigger mode (auto|manual)\n"
-        printf "  version  Show version information (also: -v, --version)\n"
-        printf "  help     Show this help message\n"
-        ;;
     *)
-        SKIP_CLEANUP=1
-        log "ERR" "Unknown action: '$1'. Run 'fiero-hotspot help' for usage."
+        log "ERR" "Unknown mode: '$2'. Use 'auto' or 'manual'."
         exit 1
         ;;
+    esac
+    ;;
+version | -v | --version)
+    SKIP_CLEANUP=1
+    printf "fiero-hotspot v%s\n" "$VERSION"
+    ;;
+help | -h | --help | "")
+    SKIP_CLEANUP=1
+    printf "Usage: fiero-hotspot {start|stop|status|clients|mode|version|help}\n"
+    printf "\n"
+    printf "  start    Start the hotspot daemon\n"
+    printf "  stop     Stop the hotspot daemon\n"
+    printf "  status   Show hotspot status dashboard\n"
+    printf "  clients  List connected clients\n"
+    printf "  mode     Toggle or set trigger mode (auto|manual)\n"
+    printf "  version  Show version information (also: -v, --version)\n"
+    printf "  help     Show this help message\n"
+    ;;
+*)
+    SKIP_CLEANUP=1
+    log "ERR" "Unknown action: '$1'. Run 'fiero-hotspot help' for usage."
+    exit 1
+    ;;
 esac
 
 # END OF FILE

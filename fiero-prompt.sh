@@ -42,6 +42,39 @@ fi
 INTERFACE="${INTERFACE:-$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')}"
 SUPPORTED_CHANNELS="${SUPPORTED_CHANNELS:-1,2,3,4,5,6,7,8,9,10,11,36,40,44,48}"
 
+freq_to_channel() {
+    local f="${1%.*}" ch=""
+    if [ "$f" = "2484" ]; then
+        ch=14
+    elif [ "$f" -ge 2407 ] 2>/dev/null && [ "$f" -le 2472 ] 2>/dev/null; then
+        ch=$(((f - 2407) / 5))
+    elif [ "$f" -ge 5000 ] 2>/dev/null; then
+        ch=$(((f - 5000) / 5))
+    fi
+    printf '%s' "$ch"
+}
+
+get_channel() {
+    local line freq
+    line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
+    [ -n "$line" ] || return 1
+    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
+    [ -n "$FREQ" ] || return 1
+    CH=$(freq_to_channel "$FREQ")
+    [ -n "$CH" ]
+}
+
+refresh_supported_channels() {
+    local phy fresh=""
+    phy=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2; exit}')
+    if [ -n "$phy" ]; then
+        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+    fi
+    if [ -n "$fresh" ]; then
+        SUPPORTED_CHANNELS="$fresh"
+    fi
+}
+
 USER_BUS="/run/user/$(id -u)/bus"
 if [ ! -S "$USER_BUS" ]; then
     echo "[WARN] D-Bus session bus not found at $USER_BUS; skipping desktop notification." >&2
@@ -55,8 +88,8 @@ COOLDOWN=11
 ac_online() {
     local supply
     for supply in /sys/class/power_supply/*; do
-        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" \
-            && [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
+        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" &&
+            [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
             return 0
         fi
     done
@@ -108,35 +141,32 @@ if [ -f "$STATE_FILE" ]; then
     fi
 fi
 
-echo "$now:$current_state:$$" > "$STATE_FILE"
+echo "$now:$current_state:$$" >"$STATE_FILE"
 
 if [ "$current_state" = "online" ]; then
-	CURRENT_FREQ=$(iw dev "$INTERFACE" link 2>/dev/null | grep -oE 'freq: [0-9]+' | awk '{print $2}')
-		CURRENT_CHANNEL=""
-		if [ -n "$CURRENT_FREQ" ]; then
-			if [ "$CURRENT_FREQ" -ge 2412 ] && [ "$CURRENT_FREQ" -le 2472 ]; then
-				CURRENT_CHANNEL=$(( (CURRENT_FREQ - 2407) / 5 ))
-			elif [ "$CURRENT_FREQ" -eq 2484 ]; then
-				CURRENT_CHANNEL=14
-			elif [ "$CURRENT_FREQ" -ge 5000 ]; then
-				CURRENT_CHANNEL=$(( (CURRENT_FREQ - 5000) / 5 ))
-			fi
-		fi
-		if [ -z "$CURRENT_CHANNEL" ]; then
-			CURRENT_CHANNEL=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/channel/{print $2; exit}')
-		fi
+    refresh_supported_channels
+    CURRENT_CHANNEL=""
+    if iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
+        if get_channel "$INTERFACE"; then
+            CURRENT_CHANNEL="$CH"
+        fi
+    fi
+    if [ -z "$CURRENT_CHANNEL" ]; then
+        CURRENT_FREQ=$(iw dev "$INTERFACE" link 2>/dev/null | grep -oE 'freq: [0-9]+' | awk '{print $2}')
+        [ -n "$CURRENT_FREQ" ] && CURRENT_CHANNEL=$(freq_to_channel "$CURRENT_FREQ")
+    fi
 
-		if [ -z "$CURRENT_CHANNEL" ]; then
-			/usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Hotspot not started: not connected to WiFi" \
-				--icon=network-wireless
-			exit 0
-		fi
+    if [ -z "$CURRENT_CHANNEL" ]; then
+        /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Hotspot not started: not connected to WiFi" \
+            --icon=network-wireless
+        exit 0
+    fi
 
-		if [[ ",$SUPPORTED_CHANNELS," != *",$CURRENT_CHANNEL,"* ]]; then
-			/usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Hotspot not started: Channel $CURRENT_CHANNEL is unsupported" \
-				--icon=network-wireless
-			exit 0
-		fi
+    if [[ ",$SUPPORTED_CHANNELS," != *",$CURRENT_CHANNEL,"* ]]; then
+        /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Hotspot not started: Channel $CURRENT_CHANNEL is unsupported" \
+            --icon=network-wireless
+        exit 0
+    fi
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC connected. Start Fiero Hotspot?" \
         --icon=network-wireless \
         --expire-time=10000 \
