@@ -5,7 +5,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-PrivateTmp=true
+PrivateTmp=false
 SyslogIdentifier=fiero-hotspot
 StandardOutput=journal
 StandardError=journal
@@ -31,15 +31,17 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 UMask=0077
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+ProtectControlGroups=true
+RestrictRealtime=true
+SystemCallFilter=~@clock @debug @module @mount @obsolete @cpu-emulation @raw-io @reboot @swap
 
 # Intentionally omitted hardening directives:
 # - NoNewPrivileges=true: breaks PAM session for sudo -u $TARGET_USER notify-send
-# - RestrictRealtime=true: locks RLIMIT_RTPRIO=0, conflicts with user PAM limits
 # - ProtectKernelTunables=true: blocks create_ap from writing net.ipv4.ip_forward
 # See README.md "Systemd Hardening Rationale" for architectural justification.
 
-# Capabilities required for NAT routing, dnsmasq chown, and PAM session privilege dropping
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_RESOURCE CAP_CHOWN CAP_AUDIT_WRITE CAP_KILL CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
+# Capabilities required for NAT routing and PAM session privilege dropping
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_OVERRIDE CAP_AUDIT_WRITE
 
 [Install]
 WantedBy=multi-user.target

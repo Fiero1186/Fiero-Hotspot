@@ -24,7 +24,7 @@ UPSTREAM_GRACE=15
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
-VERSION="1.4.1"
+VERSION="1.5.0"
 
 # --- Utility Functions ---
 escape_regex() {
@@ -44,7 +44,7 @@ freq_to_channel() {
 }
 
 get_channel() {
-    local line freq
+    local line
     line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
     [ -n "$line" ] || return 1
     FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
