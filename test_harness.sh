@@ -479,9 +479,9 @@ edge_assert_equal "Phase 6c.11: freq 5710 -> channel 142" "$(freq_to_channel 571
 CH_LINE_NEW="channel 144 (5720 MHz), width: 20 MHz, center1: 5720 MHz"
 CH_LINE_LEGACY="channel 5720 MHz (144), width: 20 MHz, center1: 5720 MHz"
 parse_ch() {
-    local line="$1" freq
-    freq=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ && $(i+1) ~ /MHz/) {print v; exit}}}')
-    freq_to_channel "$freq"
+	local line="$1" freq
+	freq=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ && $(i+1) ~ /MHz/) {print v; exit}}}')
+	freq_to_channel "$freq"
 }
 edge_assert_equal "Phase 6c.12: current iw layout parses 144" "$(parse_ch "$CH_LINE_NEW")" "144"
 edge_assert_equal "Phase 6c.13: legacy iw layout parses 144" "$(parse_ch "$CH_LINE_LEGACY")" "144"
@@ -1256,7 +1256,8 @@ if [[ "$STARTUP_SKIPPED" != "true" ]]; then
 fi
 
 # Check dmesg for kernel panic or firmware crash traces
-DMESG_FAILS=$(grep -Ei "kernel panic|firmware.*fail|call trace" "$LOG_DIR/05-dmesg-full.log" || true)
+# Filter out benign boot-time firmware probe fallbacks (e.g. iwlwifi fallback to older ucode)
+DMESG_FAILS=$(grep -Ei "kernel panic|firmware.*fail|call trace" "$LOG_DIR/05-dmesg-full.log" | grep -vEi "firmware: failed to load.*\.ucode" || true)
 if [[ -n "$DMESG_FAILS" ]]; then
 	echo "[HARD FAIL] Kernel panic or firmware error traces detected in dmesg."
 	HARD_FAIL=1

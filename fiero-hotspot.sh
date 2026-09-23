@@ -24,7 +24,7 @@ UPSTREAM_GRACE=15
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 # --- Utility Functions ---
 escape_regex() {
