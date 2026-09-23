@@ -208,7 +208,7 @@ start_hotspot() {
     notify "Starting hotspot on channel $CHANNEL..."
 
     log "INFO" "Launching create_ap in background..."
-    create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" &
+    create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" 9>&- &
     CREATE_AP_PID=$!
 
     sleep 0.5
