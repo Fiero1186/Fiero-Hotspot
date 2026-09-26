@@ -1,0 +1,3 @@
+#!/bin/bash
+# Test double for ip(8): records calls only.
+echo "ip $*" >>/tmp/mock-state/events

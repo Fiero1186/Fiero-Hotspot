@@ -1,0 +1,4 @@
+#!/bin/bash
+# Test double for udevadm: records calls only.
+echo "udevadm $*" >>/tmp/mock-state/events
+exit 0

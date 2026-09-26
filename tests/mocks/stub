@@ -1,0 +1,4 @@
+#!/bin/bash
+# Generic stand-in for dependencies that only need to exist (hostapd,
+# dnsmasq, iptables) during installer tests.
+exit 0

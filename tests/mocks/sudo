@@ -1,0 +1,4 @@
+#!/bin/bash
+# Test double for sudo: records what would have been run.
+echo "sudo $*" >>/tmp/mock-state/sudo
+exit 0

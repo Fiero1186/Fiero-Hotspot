@@ -1,0 +1,13 @@
+#!/bin/bash
+# Test double for notify-send. Records every call; for action prompts it waits
+# /tmp/mock-state/notify-delay seconds and prints /tmp/mock-state/notify-answer
+# (empty = the notification timed out).
+M=/tmp/mock-state
+echo "notify $*" >>"$M/notify"
+case "$*" in
+*--action*)
+    sleep "$(cat "$M/notify-delay" 2>/dev/null || echo 0)"
+    cat "$M/notify-answer" 2>/dev/null
+    ;;
+esac
+exit 0

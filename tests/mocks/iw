@@ -1,0 +1,49 @@
+#!/bin/bash
+# Test double for iw. Output formats copied from iw 6.9, including the
+# "signal:  <tab>-45 [-47, -46] dBm" line of `station dump`.
+# Behaviour switches (files in /tmp/mock-state): channel (number), down
+# (upstream not connected), link-fails (`iw dev wlan0 link` errors),
+# ap0 (virtual interface exists), multi (a second card wlan1).
+M=/tmp/mock-state
+ch=$(cat "$M/channel" 2>/dev/null || echo 6)
+if [ "$ch" -le 14 ]; then f=$((2407 + 5 * ch)); else f=$((5000 + 5 * ch)); fi
+
+case "$*" in
+"dev wlan0 info" | "dev wlan1 info")
+    printf 'Interface %s\n\twiphy 0\n\tchannel %s (%s MHz), width: 20 MHz\n' "$2" "$ch" "$f"
+    ;;
+"dev wlan0 link")
+    [ -f "$M/link-fails" ] && exit 234
+    if [ -f "$M/down" ]; then
+        echo "Not connected."
+    else
+        printf 'Connected to 11:22:33:44:55:66 (on wlan0)\n\tfreq: %s\n' "$f"
+    fi
+    ;;
+"dev ap0 info")
+    [ -f "$M/ap0" ] || exit 237
+    printf 'Interface ap0\n\tchannel %s (%s MHz), width: 20 MHz\n' "$ch" "$f"
+    ;;
+"dev ap0 station dump" | "dev wlan0 station dump")
+    printf 'Station aa:bb:cc:dd:ee:ff (on ap0)\n\tsignal:  \t-45 [-47, -46] dBm\n\tsignal avg:\t-44 [-46, -45] dBm\n'
+    ;;
+"dev ap0 del")
+    rm -f "$M/ap0"
+    echo "iw-del-ap0" >>"$M/events"
+    ;;
+"phy phy0 info")
+    for c in 1 2 3 4 5 6 7 8 9 10 11; do
+        printf '\t\t\t* %s.0 MHz [%s] (22.0 dBm)\n' $((2407 + 5 * c)) "$c"
+    done
+    printf '\t\t\t* 5180.0 MHz [36] (22.0 dBm) (no IR)\n'
+    ;;
+dev)
+    echo "phy#0"
+    printf '\tInterface wlan0\n'
+    if [ -f "$M/ap0" ]; then printf '\tInterface ap0\n'; fi
+    if [ -f "$M/multi" ]; then printf '\tInterface wlan1\n'; fi
+    ;;
+*)
+    exit 0
+    ;;
+esac

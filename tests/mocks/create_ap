@@ -1,0 +1,52 @@
+#!/bin/bash
+# Test double for create_ap (linux-wifi-hotspot). It reproduces the on-disk
+# contract fiero-hotspot.sh relies on:
+#   - /tmp/create_ap.<iface>.conf.XXXXXXXX with pid, wifi_iface, hostapd.conf
+#     and dnsmasq.leases
+#   - a "hostapd" child whose command line contains <confdir>/hostapd.conf
+#   - USR1 = clean exit (what `create_ap --stop` sends)
+# Behaviour switches (files in /tmp/mock-state): no-virt, ignore-usr1,
+# stop-delay (seconds). Every invocation's arguments go to argv.
+M=/tmp/mock-state
+mkdir -p "$M"
+printf '%s\n' "$*" >>"$M/argv"
+
+if [ "${1:-}" = "--config" ]; then
+    cp "$2" "$M/last-config"
+    stat -c %a "$2" >"$M/conf-mode"
+    IFACE=$(sed -n 's/^WIFI_IFACE=//p' "$2")
+elif [ "${1:-}" = "--stop" ]; then
+    exit 0
+else
+    IFACE=$1
+fi
+
+CONFDIR=$(mktemp -d "/tmp/create_ap.${IFACE}.conf.XXXXXXXX")
+echo $$ >"$CONFDIR/pid"
+if [ -f "$M/no-virt" ]; then
+    echo "$IFACE" >"$CONFDIR/wifi_iface"
+else
+    echo ap0 >"$CONFDIR/wifi_iface"
+    touch "$M/ap0"
+fi
+touch "$CONFDIR/hostapd.conf"
+printf '0 aa:bb:cc:dd:ee:ff 192.168.12.10 phone *\n' >"$CONFDIR/dnsmasq.leases"
+
+bash -c "exec -a 'hostapd $CONFDIR/hostapd.conf' sleep 1000" &
+HPID=$!
+
+bye() {
+    sleep "$(cat "$M/stop-delay" 2>/dev/null || echo 0)"
+    kill "$HPID" 2>/dev/null
+    rm -rf "$CONFDIR" "$M/ap0"
+    echo "clean-exit $$" >>"$M/events"
+    exit 0
+}
+if [ -f "$M/ignore-usr1" ]; then
+    trap '' USR1
+else
+    trap bye USR1
+fi
+trap bye INT
+
+while :; do sleep 0.2; done

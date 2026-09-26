@@ -1,0 +1,13 @@
+#!/bin/bash
+# Test double for systemctl: "is-active" follows /tmp/mock-state/svc-active,
+# everything else succeeds and is recorded.
+if [ "${1:-}" = "is-active" ]; then
+    if [ -f /tmp/mock-state/svc-active ]; then
+        [ "${2:-}" = "--quiet" ] || echo active
+        exit 0
+    fi
+    [ "${2:-}" = "--quiet" ] || echo inactive
+    exit 3
+fi
+echo "systemctl $*" >>/tmp/mock-state/events
+exit 0
