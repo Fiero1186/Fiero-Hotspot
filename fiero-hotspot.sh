@@ -19,15 +19,26 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-SHUTDOWN_LOCK="/run/fiero-shutting-down.lock"
-UPSTREAM_GRACE=15
+VERSION="1.5.0"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
+LOCK_FILE="/run/fiero-hotspot.lock"
 
-VERSION="1.5.0"
+# Per-instance state. Created by systemd (RuntimeDirectory=) or by us when
+# running in the foreground. Only root can read it (mode 0700).
+RUN_DIR="/run/fiero-hotspot"
+PID_FILE="$RUN_DIR/create_ap.pid"
+CONFDIR_FILE="$RUN_DIR/confdir"
+IFACE_FILE="$RUN_DIR/ap_iface"
+STOP_FLAG="$RUN_DIR/stopping"
+
+UPSTREAM_GRACE=15
+AP_START_TIMEOUT=8
+AP_STOP_TIMEOUT=15
 
 # --- Utility Functions ---
 escape_regex() {
+    # shellcheck disable=SC2016 # the sed expression is meant to be literal
     printf '%s' "$1" | sed 's/[][\.|$(){}?+*^\\-]/\\&/g'
 }
 
@@ -88,36 +99,43 @@ notify() {
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
 }
 
-for cmd in iw pgrep pkill create_ap; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        log "ERR" "Required command not found: $cmd. Run install.sh first."
+# --- Configuration ---
+# Only commands that touch the hotspot load the config; help and version work
+# for any user, even before create_ap is installed.
+load_config() {
+    local cmd conf_owner conf_perms
+    for cmd in iw pgrep pkill create_ap; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            log "ERR" "Required command not found: $cmd. Run install.sh first."
+            exit 1
+        fi
+    done
+
+    if [ -f "$CONFIG_FILE" ]; then
+        conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
+        conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
+        if [ "$conf_owner" != "root" ] || { [ "$conf_perms" != "640" ] && [ "$conf_perms" != "600" ]; }; then
+            log "ERR" "Config file $CONFIG_FILE has unsafe permissions ($conf_perms, owner=$conf_owner). Expected 600 or 640 root:*. Refusing to source."
+            exit 1
+        fi
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
+    else
+        log "ERR" "Config file not found at $CONFIG_FILE. Run install.sh first."
         exit 1
     fi
-done
 
-if [ -f "$CONFIG_FILE" ]; then
-    conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
-    conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
-    if [ "$conf_owner" != "root" ] || { [ "$conf_perms" != "640" ] && [ "$conf_perms" != "600" ]; }; then
-        log "ERR" "Config file $CONFIG_FILE has unsafe permissions ($conf_perms, owner=$conf_owner). Expected 600 or 640 root:*. Refusing to source."
+    if [ -z "${SSID:-}" ] || [ -z "${PASSWORD:-}" ] || [ -z "${INTERFACE:-}" ]; then
+        log "ERR" "Config file is missing required values (SSID, PASSWORD, INTERFACE)."
         exit 1
     fi
-    source "$CONFIG_FILE"
-else
-    log "ERR" "Config file not found at $CONFIG_FILE. Run install.sh first."
-    exit 1
-fi
 
-if [ -z "${SSID:-}" ] || [ -z "${PASSWORD:-}" ] || [ -z "${INTERFACE:-}" ]; then
-    log "ERR" "Config file is missing required values (SSID, PASSWORD, INTERFACE)."
-    exit 1
-fi
-
-# --- v0.3 Backward Compatibility Check ---
-if [ -z "${SUPPORTED_CHANNELS:-}" ]; then
-    log "WARN" "SUPPORTED_CHANNELS not found in config. Was install.sh v0.3 run? Using safe defaults."
-    SUPPORTED_CHANNELS="1,2,3,4,5,6,7,8,9,10,11,36,40,44,48"
-fi
+    # --- v0.3 Backward Compatibility Check ---
+    if [ -z "${SUPPORTED_CHANNELS:-}" ]; then
+        log "WARN" "SUPPORTED_CHANNELS not found in config. Was install.sh v0.3 run? Using safe defaults."
+        SUPPORTED_CHANNELS="1,2,3,4,5,6,7,8,9,10,11,36,40,44,48"
+    fi
+}
 
 ac_online() {
     if [ -n "${POWER_SUPPLY:-}" ] &&
@@ -135,56 +153,257 @@ ac_online() {
     return 1
 }
 
+# --- create_ap Instance Tracking ---
+# Fiero only ever touches the create_ap process it started (recorded in
+# $PID_FILE). Other hotspots on the system - the linux-wifi-hotspot GUI,
+# another create_ap - are left alone.
 CREATE_AP_PID=""
 
-cleanup() {
-    if [ "${SKIP_CLEANUP:-0}" = "1" ]; then
+ensure_run_dir() {
+    install -d -m 0700 "$RUN_DIR"
+}
+
+read_state() {
+    [ -f "$1" ] && head -n1 "$1" 2>/dev/null
+}
+
+is_create_ap_pid() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -q 'create_ap'
+}
+
+current_pid() {
+    local pid="${CREATE_AP_PID:-}"
+    [ -n "$pid" ] || pid=$(read_state "$PID_FILE")
+    is_create_ap_pid "$pid" && printf '%s' "$pid"
+}
+
+# create_ap writes its own PID to <confdir>/pid, and the AP interface it
+# actually uses (ap0, or the physical card with --no-virt) to
+# <confdir>/wifi_iface.
+find_confdir() {
+    local d
+    for d in /tmp/create_ap.*.conf.*; do
+        [ -f "$d/pid" ] || continue
+        if [ "$(cat "$d/pid" 2>/dev/null)" = "$1" ]; then
+            printf '%s' "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_confdir_path() {
+    [[ "${1:-}" =~ ^/tmp/create_ap\.[A-Za-z0-9_.-]+\.conf\.[A-Za-z0-9]+$ ]]
+}
+
+launch_create_ap() {
+    local ch="$1"
+    ensure_run_dir
+    rm -f "$CONFDIR_FILE" "$IFACE_FILE"
+    create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$ch" 9>&- &
+    CREATE_AP_PID=$!
+    printf '%s\n' "$CREATE_AP_PID" >"$PID_FILE"
+}
+
+# Wait until our create_ap has a running hostapd and an AP interface.
+wait_for_ap() {
+    local attempt confdir ap_iface
+    sleep 0.5
+    for ((attempt = 1; attempt <= AP_START_TIMEOUT; attempt++)); do
+        kill -0 "$CREATE_AP_PID" 2>/dev/null || return 1
+        confdir=$(find_confdir "$CREATE_AP_PID") || confdir=""
+        if [ -n "$confdir" ] && [ -f "$confdir/wifi_iface" ]; then
+            ap_iface=$(cat "$confdir/wifi_iface" 2>/dev/null)
+            if [ -n "$ap_iface" ] && iw dev "$ap_iface" info >/dev/null 2>&1 &&
+                pgrep -f "hostapd.*$(escape_regex "$confdir")/hostapd.conf" >/dev/null; then
+                printf '%s\n' "$confdir" >"$CONFDIR_FILE"
+                printf '%s\n' "$ap_iface" >"$IFACE_FILE"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# create_ap saves the original forwarding values before enabling NAT and puts
+# them back in its own cleanup. If we had to kill it, do that for it - unless
+# another create_ap instance still needs forwarding.
+restore_ip_forward() {
+    local common="/tmp/create_ap.common.conf"
+    if pgrep -f '(^|/)create_ap( |$)' >/dev/null; then
         return 0
     fi
-    create_ap --stop "$INTERFACE" 2>/dev/null || true
-    if [ -n "$CREATE_AP_PID" ]; then
-        kill "$CREATE_AP_PID" 2>/dev/null || true
+    if [ -f "$common/ip_forward" ]; then
+        cat "$common/ip_forward" >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+        log "WARN" "Restored net.ipv4.ip_forward to $(cat "$common/ip_forward" 2>/dev/null)."
     fi
-    local escaped_if
-    escaped_if=$(escape_regex "$INTERFACE")
-    pkill -f "create_ap.*$escaped_if" 2>/dev/null || true
-    for dev in $(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2}'); do
-        ip link set dev "$dev" down 2>/dev/null || true
-        iw dev "$dev" del 2>/dev/null || true
-        ip link delete "$dev" 2>/dev/null || true
-    done
-    # Note: Deliberately skipping p2p-dev-$INTERFACE deletion to prevent iwlwifi firmware crashes
-    find /tmp -maxdepth 1 -name "create_ap*" -uid 0 ! -type l -exec rm -rf {} + 2>/dev/null || true
+    if [ -f "$common/${INTERFACE}_forwarding" ]; then
+        cat "$common/${INTERFACE}_forwarding" >"/proc/sys/net/ipv4/conf/$INTERFACE/forwarding" 2>/dev/null || true
+    fi
 }
-# trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 0' TERM
+
+# Ask our create_ap to stop and wait for it. create_ap's own cleanup restores
+# ip_forward, iptables and NetworkManager, so it must be allowed to finish
+# before anything else is removed.
+stop_create_ap() {
+    local pid ap_iface confdir forced=0 i
+    pid=$(current_pid) || pid=""
+    ap_iface=$(read_state "$IFACE_FILE")
+    confdir=$(read_state "$CONFDIR_FILE")
+
+    if [ -n "$pid" ]; then
+        # USR1 is create_ap's clean-exit signal (same as `create_ap --stop`)
+        kill -USR1 "$pid" 2>/dev/null || true
+        for ((i = 0; i < AP_STOP_TIMEOUT * 2; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            log "WARN" "create_ap (pid $pid) did not exit within ${AP_STOP_TIMEOUT}s; forcing it."
+            kill -TERM "$pid" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$pid" 2>/dev/null || true
+            forced=1
+        fi
+    fi
+
+    if [ "$forced" -eq 1 ] && is_confdir_path "$confdir"; then
+        # hostapd and dnsmasq of *this* instance carry the confdir in their
+        # command line
+        pkill -f "$(escape_regex "$confdir")/" 2>/dev/null || true
+        restore_ip_forward
+        rm -rf -- "$confdir"
+    fi
+
+    # Only a leftover virtual interface is removed, never the physical card.
+    # Deliberately never touches p2p-dev-* to prevent iwlwifi firmware crashes.
+    if [ -n "$ap_iface" ] && [ "$ap_iface" != "${INTERFACE:-}" ] &&
+        [[ "$ap_iface" =~ ^ap[0-9]+$ ]] && iw dev "$ap_iface" info >/dev/null 2>&1; then
+        log "WARN" "Removing leftover AP interface $ap_iface."
+        ip link set dev "$ap_iface" down 2>/dev/null || true
+        iw dev "$ap_iface" del 2>/dev/null || true
+    fi
+
+    CREATE_AP_PID=""
+    rm -f "$PID_FILE" "$CONFDIR_FILE" "$IFACE_FILE"
+}
+
+cleanup() {
+    stop_create_ap
+    rm -f "$STOP_FLAG"
+}
 
 detect_channel() {
     get_channel "$INTERFACE" && CHANNEL="$CH"
 }
 
+# Watch the upstream link while the AP runs: follow channel changes, stop when
+# upstream is gone for good, stop when create_ap dies.
+monitor_hotspot() {
+    local last_channel="$CHANNEL" down_since="" poll_int=2
+    local now link_out link_rc current_ch
+
+    while true; do
+        if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+            if [ -f "$STOP_FLAG" ]; then
+                log "INFO" "create_ap stopped on request."
+            else
+                log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
+                notify "Hotspot stopped: create_ap process exited"
+            fi
+            break
+        fi
+
+        now=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
+        link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
+        link_rc=$?
+
+        if [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Connected to"; then
+            down_since=""
+            poll_int=2
+
+            current_ch=""
+            if get_channel "$INTERFACE"; then current_ch="$CH"; fi
+            if [ -n "$current_ch" ] && [ "$current_ch" != "$last_channel" ]; then
+                log "WARN" "Upstream channel changed ($last_channel -> $current_ch). Re-evaluating AP..."
+                if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
+                    log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
+                    notify "Hotspot stopped: channel $current_ch unsupported"
+                    break
+                fi
+
+                notify "Hotspot restarting: channel changed to $current_ch"
+                stop_create_ap
+                CHANNEL="$current_ch"
+                last_channel="$current_ch"
+
+                launch_create_ap "$CHANNEL"
+                if ! wait_for_ap; then
+                    log "ERR" "Failed to bring up AP on channel $CHANNEL within ${AP_START_TIMEOUT}s."
+                    notify "Hotspot stopped: AP re-init failed"
+                    break
+                fi
+                log "INFO" "create_ap successfully restarted on channel $CHANNEL (pid $CREATE_AP_PID)."
+                notify "Hotspot is live on channel $CHANNEL!"
+            fi
+        else
+            # "Not connected", or iw itself failed (driver reset, card removed)
+            poll_int=1
+            if [ -z "$down_since" ]; then
+                down_since="$now"
+            fi
+            if [ $((now - down_since)) -ge "$UPSTREAM_GRACE" ]; then
+                sleep 2
+                if ! iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
+                    log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
+                    notify "Hotspot stopped: upstream Wi-Fi disconnected"
+                    break
+                fi
+                down_since=""
+            fi
+        fi
+
+        sleep "$poll_int"
+    done
+}
+
 start_hotspot() {
     if [ "$EUID" -ne 0 ]; then
-        SKIP_CLEANUP=1
         log "ERR" "Starting the hotspot requires root. Run: sudo fiero-hotspot start"
         exit 1
     fi
-    exec 9>/run/fiero-hotspot.lock
+    load_config
+
+    exec 9>"$LOCK_FILE"
     flock -n 9 || {
         log "INFO" "Another instance is running. Exiting."
-        SKIP_CLEANUP=1
         exit 0
     }
 
+    # Leftover from an earlier run of ours (e.g. a killed foreground session)
+    if [ -n "$(current_pid)" ]; then
+        log "WARN" "Stopping stale create_ap from a previous run..."
+        stop_create_ap
+    fi
+
     local escaped_if
     escaped_if=$(escape_regex "$INTERFACE")
-    if pgrep -f "create_ap.*$escaped_if" >/dev/null && iw dev | grep -qE '^\s*Interface ap[0-9]'; then
-        log "INFO" "Hotspot already running. Skipping."
-        SKIP_CLEANUP=1
+    if pgrep -f "create_ap.*$escaped_if" >/dev/null; then
+        log "WARN" "create_ap is already running on $INTERFACE (started outside Fiero?). Not touching it."
+        log "WARN" "Stop it first, e.g.: sudo create_ap --stop $INTERFACE"
+        notify "Hotspot not started: another hotspot is already running on $INTERFACE"
         exit 0
     fi
+
+    ensure_run_dir
+    rm -f "$STOP_FLAG"
+
+    # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 0' TERM
 
     log "INFO" "Starting hotspot process..."
 
@@ -202,158 +421,74 @@ start_hotspot() {
         exit 0
     fi
 
-    log "INFO" "Cleaning up stale create_ap and virtual interfaces..."
-    cleanup
-
     notify "Starting hotspot on channel $CHANNEL..."
 
     log "INFO" "Launching create_ap in background..."
-    create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" 9>&- &
-    CREATE_AP_PID=$!
+    launch_create_ap "$CHANNEL"
 
-    sleep 0.5
-    if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-        log "ERR" "create_ap process exited immediately after launch."
-        cleanup
+    if ! wait_for_ap; then
+        if kill -0 "$CREATE_AP_PID" 2>/dev/null; then
+            log "ERR" "create_ap failed to start (pid $CREATE_AP_PID, no AP within ${AP_START_TIMEOUT}s)."
+        else
+            log "ERR" "create_ap exited during startup."
+        fi
+        notify "Hotspot could not start (see: journalctl -u fiero-hotspot)"
         exit 1
     fi
 
-    for ((attempt = 1; attempt <= 8; attempt++)); do
-        if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-            break
-        fi
-        if iw dev 2>/dev/null | grep -qE '^\s*Interface ap[0-9]+' && pgrep -f "hostapd.*/tmp/create_ap" >/dev/null; then
-            log "INFO" "create_ap is live (pid $CREATE_AP_PID, AP interface up)."
-            notify "Hotspot is live! SSID: $SSID"
-            local last_channel="$CHANNEL"
-            local down_since=""
-            local poll_int=2
-            rm -f "$SHUTDOWN_LOCK"
-            while true; do
-                if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-                    if [ -f "$SHUTDOWN_LOCK" ]; then
-                        rm -f "$SHUTDOWN_LOCK"
-                        log "WARN" "create_ap exited during manual stop; treating as clean stop."
-                        break
-                    fi
-                    log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
-                    notify "Hotspot stopped: create_ap process exited"
-                    break
-                fi
+    log "INFO" "create_ap is live (pid $CREATE_AP_PID, AP interface $(read_state "$IFACE_FILE"))."
+    notify "Hotspot is live! SSID: $SSID"
 
-                local up_uptime link_out link_rc
-                up_uptime=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
-                link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
-                link_rc=$?
-
-                if [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Connected to"; then
-                    down_since=""
-                    poll_int=2
-
-                    local current_ch=""
-                    if get_channel "$INTERFACE"; then current_ch="$CH"; fi
-                    if [ -n "$current_ch" ] && [ "$current_ch" != "$last_channel" ]; then
-                        log "WARN" "Upstream channel changed ($last_channel -> $current_ch). Re-evaluating AP..."
-                        if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
-                            log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
-                            notify "Hotspot stopped: channel $current_ch unsupported"
-                            break
-                        fi
-
-                        notify "Hotspot restarting: channel changed to $current_ch"
-                        cleanup
-                        CHANNEL="$current_ch"
-                        last_channel="$current_ch"
-
-                        create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$CHANNEL" 9>&- &
-                        CREATE_AP_PID=$!
-
-                        sleep 0.5
-                        if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-                            log "ERR" "create_ap failed to restart on channel $CHANNEL."
-                            notify "Hotspot stopped: create_ap restart failed"
-                            break
-                        fi
-
-                        local reinit_ok=0
-                        for ((reinit_attempt = 1; reinit_attempt <= 8; reinit_attempt++)); do
-                            if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
-                                break
-                            fi
-                            if iw dev 2>/dev/null | grep -qE '^\s*Interface ap[0-9]+' && pgrep -f "hostapd.*/tmp/create_ap" >/dev/null; then
-                                reinit_ok=1
-                                log "INFO" "create_ap successfully restarted on channel $CHANNEL (pid $CREATE_AP_PID)."
-                                notify "Hotspot is live on channel $CHANNEL!"
-                                break
-                            fi
-                            sleep 1
-                        done
-
-                        if [ "$reinit_ok" -ne 1 ]; then
-                            log "ERR" "Failed to bring up AP on channel $CHANNEL within 8s."
-                            notify "Hotspot stopped: AP re-init failed"
-                            break
-                        fi
-                    fi
-                elif [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Not connected"; then
-                    poll_int=1
-                    if [ -z "$down_since" ]; then
-                        down_since="$up_uptime"
-                    fi
-                    if [ $((up_uptime - down_since)) -ge "$UPSTREAM_GRACE" ]; then
-                        sleep 2
-                        link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
-                        if ! printf '%s' "$link_out" | grep -q "Connected to"; then
-                            log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
-                            notify "Hotspot stopped: upstream Wi-Fi disconnected"
-                            break
-                        fi
-                        down_since=""
-                    fi
-                fi
-
-                sleep "$poll_int"
-            done
-            cleanup
-            return 0
-        fi
-        sleep 1
-    done
-
-    log "ERR" "create_ap failed to start (pid $CREATE_AP_PID, no AP interface within 8s)."
-    cleanup
-    exit 1
+    monitor_hotspot
+    exit 0
 }
 
 stop_hotspot() {
     if [ "$EUID" -ne 0 ]; then
-        SKIP_CLEANUP=1
         log "ERR" "Stopping the hotspot requires root. Run: sudo fiero-hotspot stop"
         exit 1
     fi
-    touch "$SHUTDOWN_LOCK"
+    load_config
+
+    # Run by hand while systemd owns the hotspot: let systemd stop it, so
+    # the service state stays correct. (INVOCATION_ID is set for processes
+    # started by systemd, including ExecStop=.)
+    if [ -z "${INVOCATION_ID:-}" ] && systemctl is-active --quiet fiero-hotspot.service 2>/dev/null; then
+        log "INFO" "Stopping fiero-hotspot.service..."
+        exec systemctl stop fiero-hotspot.service
+    fi
+
+    ensure_run_dir
+    touch "$STOP_FLAG"
     log "INFO" "Stopping hotspot..."
+    stop_create_ap
+
     if ac_online; then
         notify "Hotspot stopped manually"
     else
         notify "Hotspot stopped (charger unplugged)"
     fi
-    # Teardown is handled automatically by the EXIT trap
 }
 
 status_hotspot() {
-    SKIP_CLEANUP=1
     if [ "$EUID" -ne 0 ]; then
         log "ERR" "Status requires root. Run: sudo fiero-hotspot status"
         exit 1
     fi
+    load_config
 
-    local svc_state ap_iface ap_channel ap_freq client_count ac_status
+    local svc_state pid ap_iface ap_channel ap_freq client_count ac_status
 
     svc_state=$(systemctl is-active fiero-hotspot.service 2>/dev/null || true)
     svc_state="${svc_state:-inactive}"
 
-    ap_iface=$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2; exit}')
+    pid=$(current_pid) || pid=""
+    if [ "$svc_state" != "active" ] && [ -n "$pid" ]; then
+        svc_state="running in foreground (pid $pid)"
+    fi
+
+    ap_iface=""
+    [ -n "$pid" ] && ap_iface=$(read_state "$IFACE_FILE")
     ap_iface="${ap_iface:-none}"
 
     if [ "$ap_iface" != "none" ]; then
@@ -401,23 +536,31 @@ status_hotspot() {
 }
 
 clients_hotspot() {
-    SKIP_CLEANUP=1
     if [ "$EUID" -ne 0 ]; then
         log "ERR" "Client listing requires root. Run: sudo fiero-hotspot clients"
         exit 1
     fi
+    load_config
 
-    local ap_iface
-    ap_iface=$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 ~ /^ap[0-9]+/ {print $2; exit}')
+    local pid ap_iface confdir
+    pid=$(current_pid) || pid=""
+    ap_iface=""
+    [ -n "$pid" ] && ap_iface=$(read_state "$IFACE_FILE")
 
     if [ -z "$ap_iface" ]; then
         log "INFO" "Hotspot is not running. No AP interface found."
         exit 0
     fi
 
+    # The service runs with a private /tmp; /proc/<pid>/root reaches the
+    # create_ap process's own view of it from outside the sandbox.
     local -A mac_to_ip mac_to_host
     local lease_file
-    for lease_file in /var/lib/misc/dnsmasq.leases /tmp/create_ap.*/dnsmasq.leases; do
+    confdir=$(read_state "$CONFDIR_FILE")
+    for lease_file in /var/lib/misc/dnsmasq.leases "/proc/$pid/root$confdir/dnsmasq.leases"; do
+        if [ "$lease_file" != "/var/lib/misc/dnsmasq.leases" ] && ! is_confdir_path "$confdir"; then
+            continue
+        fi
         [ -f "$lease_file" ] || continue
         while IFS=' ' read -r _expiry mac ip hostname _rest; do
             mac_to_ip["$mac"]="$ip"
@@ -439,11 +582,15 @@ clients_hotspot() {
     printf "  %-17s %-10s %-15s %s\n" "MAC" "Signal" "IP" "Hostname"
     printf "  %-17s %-10s %-15s %s\n" "─────────────────" "──────────" "───────────────" "─────────────"
 
-    local current_mac=""
+    # iw prints "\tsignal:  \t-45 [-47, -46] dBm" (two spaces, a tab, and an
+    # optional per-chain list), so match any whitespace and stop at the number.
+    local current_mac="" line
+    local station_re='^Station ([0-9a-fA-F:]+)'
+    local signal_re='^[[:space:]]*signal:[[:space:]]+(-?[0-9]+)'
     while IFS= read -r line; do
-        if [[ "$line" =~ ^Station\ ([0-9a-fA-F:]+) ]]; then
+        if [[ "$line" =~ $station_re ]]; then
             current_mac="${BASH_REMATCH[1]}"
-        elif [[ "$line" =~ signal:\ (-?[0-9]+)\ dBm ]]; then
+        elif [[ "$line" =~ $signal_re ]]; then
             local signal="${BASH_REMATCH[1]}"
             local ip="${mac_to_ip[$current_mac]:--}"
             local host="${mac_to_host[$current_mac]:--}"
@@ -452,30 +599,26 @@ clients_hotspot() {
     done <<<"$station_output"
 }
 
-case "${1:-}" in
-start) start_hotspot ;;
-stop) stop_hotspot ;;
-status) status_hotspot ;;
-clients) clients_hotspot ;;
-mode | toggle)
-    SKIP_CLEANUP=1
+update_auto_prompt() {
+    local val="$1"
+    if grep -q '^AUTO_PROMPT=' "$CONFIG_FILE" 2>/dev/null; then
+        sed -i "s/^AUTO_PROMPT=.*/AUTO_PROMPT='${val}'/" "$CONFIG_FILE"
+    else
+        echo "AUTO_PROMPT='${val}'" >>"$CONFIG_FILE"
+    fi
+    chown root:"$TARGET_USER" "$CONFIG_FILE" 2>/dev/null || true
+    chmod 640 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+mode_hotspot() {
     if [ "$EUID" -ne 0 ]; then
         log "ERR" "Mode toggle requires root. Run: sudo fiero-hotspot mode"
         exit 1
     fi
-    cfg="/etc/fiero-hotspot.conf"
-    current="${AUTO_PROMPT:-true}"
-    update_auto_prompt() {
-        local val="$1"
-        if grep -q '^AUTO_PROMPT=' "$cfg" 2>/dev/null; then
-            sed -i "s/^AUTO_PROMPT=.*/AUTO_PROMPT='${val}'/" "$cfg"
-        else
-            echo "AUTO_PROMPT='${val}'" >>"$cfg"
-        fi
-        chown root:"$TARGET_USER" "$cfg" 2>/dev/null || true
-        chmod 640 "$cfg" 2>/dev/null || true
-    }
-    case "${2:-}" in
+    load_config
+
+    local current="${AUTO_PROMPT:-true}" ans
+    case "${1:-}" in
     auto | enable | on)
         update_auto_prompt 'true'
         log "INFO" "Auto-prompt enabled."
@@ -508,17 +651,13 @@ mode | toggle)
         esac
         ;;
     *)
-        log "ERR" "Unknown mode: '$2'. Use 'auto' or 'manual'."
+        log "ERR" "Unknown mode: '$1'. Use 'auto' or 'manual'."
         exit 1
         ;;
     esac
-    ;;
-version | -v | --version)
-    SKIP_CLEANUP=1
-    printf "fiero-hotspot v%s\n" "$VERSION"
-    ;;
-help | -h | --help | "")
-    SKIP_CLEANUP=1
+}
+
+usage() {
     printf "Usage: fiero-hotspot {start|stop|status|clients|mode|version|help}\n"
     printf "\n"
     printf "  start    Start the hotspot daemon\n"
@@ -528,9 +667,21 @@ help | -h | --help | "")
     printf "  mode     Toggle or set trigger mode (auto|manual)\n"
     printf "  version  Show version information (also: -v, --version)\n"
     printf "  help     Show this help message\n"
+}
+
+case "${1:-}" in
+start) start_hotspot ;;
+stop) stop_hotspot ;;
+status) status_hotspot ;;
+clients) clients_hotspot ;;
+mode | toggle) mode_hotspot "${2:-}" ;;
+version | -v | --version)
+    printf "fiero-hotspot v%s\n" "$VERSION"
+    ;;
+help | -h | --help | "")
+    usage
     ;;
 *)
-    SKIP_CLEANUP=1
     log "ERR" "Unknown action: '$1'. Run 'fiero-hotspot help' for usage."
     exit 1
     ;;
