@@ -71,6 +71,7 @@ DBUS_MONITOR_PID=""
 EDGE_TMP_DIRS=()
 CONFIG_BACKUP=""
 
+# shellcheck disable=SC2317,SC2329 # invoked via trap
 cleanup() {
 	local exit_code=$?
 	set +e
@@ -796,6 +797,16 @@ fi
 # ------------------------------------------------------------------------------
 SCRIPT_UNDER_TEST="/usr/local/bin/fiero-hotspot"
 
+# Phase 9 exercises the *installed* copy. If it differs from the repository
+# copy, every result below describes old code - say so loudly.
+REPO_SCRIPT="$(cd "$(dirname "$0")" && pwd)/fiero-hotspot.sh"
+if [[ -f "$REPO_SCRIPT" ]] && ! cmp -s "$REPO_SCRIPT" "$SCRIPT_UNDER_TEST"; then
+	echo "[WARN] $SCRIPT_UNDER_TEST differs from $REPO_SCRIPT - re-run install.sh to test your changes."
+	edge_result "Phase 9.0: installed fiero-hotspot matches repository copy" FAIL
+else
+	edge_result "Phase 9.0: installed fiero-hotspot matches repository copy" PASS
+fi
+
 # 9a. Unprivileged execution & error routing
 set +e
 SU_START_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST start" 2>&1)
@@ -1248,11 +1259,17 @@ if [[ -n "$LINGERING_IFACES" ]]; then
 	HARD_FAIL=1
 fi
 
-# Check lifecycle timeouts
+# Check lifecycle timeouts. A skipped lifecycle is not a pass: the hotspot was
+# never started, so the run is reported INCOMPLETE (exit 2), not PASS.
+INCOMPLETE=0
 if [[ "$STARTUP_SKIPPED" != "true" ]]; then
 	if [[ "$STARTUP_SUCCESS" != "true" ]] || [[ "$TEARDOWN_SUCCESS" != "true" ]]; then
 		HARD_FAIL=1
 	fi
+else
+	echo "[INCOMPLETE] Hotspot start/stop was not tested (upstream on unsupported channel ${CURRENT_CHANNEL:-none})."
+	echo "             Connect to a network on a supported channel and re-run before calling this a pass."
+	INCOMPLETE=1
 fi
 
 # Check dmesg for kernel panic or firmware crash traces
@@ -1301,7 +1318,13 @@ fi
 		echo "$RESOURCE_SNAPSHOT"
 		echo "----------------------------------------------------------------------"
 	fi
-	echo "Final Test Result   : $([[ "$HARD_FAIL" -eq 0 ]] && echo "PASS (Exit 0)" || echo "HARD FAIL (Exit 1)")"
+	if [[ "$HARD_FAIL" -ne 0 ]]; then
+		echo "Final Test Result   : HARD FAIL (Exit 1)"
+	elif [[ "$INCOMPLETE" -ne 0 ]]; then
+		echo "Final Test Result   : INCOMPLETE - lifecycle not tested (Exit 2)"
+	else
+		echo "Final Test Result   : PASS (Exit 0)"
+	fi
 	echo "======================================================================"
 } >"$LOG_DIR/summary.txt"
 
@@ -1309,6 +1332,9 @@ cat "$LOG_DIR/summary.txt"
 
 if [[ "$HARD_FAIL" -ne 0 ]]; then
 	exit 1
+fi
+if [[ "$INCOMPLETE" -ne 0 ]]; then
+	exit 2
 fi
 
 exit 0
