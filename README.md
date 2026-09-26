@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v1.3.0-blue)
+![Version](https://img.shields.io/badge/version-v1.5.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 
 ## Overview
@@ -83,31 +83,33 @@ The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses
 ```
 udev event (AC online/offline)
   └─> 99-fiero-hotspot.rules
-        └─> su - <user> -c /usr/local/bin/fiero-prompt
-              └─> systemctl start/stop fiero-hotspot.service
+        └─> systemd-run --no-block -- su - <user> -c /usr/local/bin/fiero-prompt
+              └─> sudo -n systemctl start/stop fiero-hotspot.service
                     └─> /usr/local/bin/fiero-hotspot {start|stop}
                           └─> flock -n /run/fiero-hotspot.lock
-                                └─> create_ap <iface> <iface> <ssid> <pass> -c <ch>
+                                └─> create_ap --config /run/fiero-hotspot/create_ap.conf
 ```
 
-The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `su`, which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly.
+The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly.
 
 ### Signal Handling
 
-`fiero-hotspot.sh` traps `EXIT`, `INT`, and `TERM`. The `cleanup` function:
+Fiero only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0700`, created by systemd's `RuntimeDirectory=`): the `create_ap` PID, the `create_ap` config directory, and the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`).
 
-1. Runs `create_ap --stop <interface>`
-2. Kills the background `create_ap` PID
-3. Runs `pkill -f "create_ap.*<interface>"` as a fallback
-4. Iterates over virtual `ap*` interfaces (`iw dev`) and tears them down with `ip link set dev <apN> down`, `iw dev <apN> del`, and `ip link delete <apN>`
-5. Removes stale `create_ap*` temp files from `/tmp`
-6. Deliberately skips deleting `p2p-dev-<interface>` to prevent iwlwifi firmware crashes
+`fiero-hotspot.sh start` traps `EXIT`, `INT`, and `TERM`. Stopping (by the trap, by `fiero-hotspot stop`, or on a channel change):
 
-Cleanup is idempotent. The `SKIP_CLEANUP` flag prevents redundant teardown when the process exits due to a lock conflict or an already-running instance.
+1. Sends `USR1` to Fiero's own `create_ap` (its clean-exit signal, same as `create_ap --stop`) and **waits up to 15 seconds** for it to exit. `create_ap`'s own cleanup restores `ip_forward`, removes its `iptables` rules and undoes its NetworkManager changes, so it must be allowed to finish first.
+2. Only if `create_ap` hangs: kills it, stops the `hostapd`/`dnsmasq` belonging to *that* instance (matched by its config directory), and restores the saved `ip_forward` value if no other `create_ap` is running.
+3. Removes a leftover virtual `apN` interface of Fiero's own instance. The physical card and other tools' interfaces are never touched.
+4. Deliberately skips deleting `p2p-dev-<interface>` to prevent iwlwifi firmware crashes.
+
+Hotspots started by other tools (for example the linux-wifi-hotspot GUI) are left alone: if a `create_ap` is already running on the interface, `start` exits with a message instead of killing it. Running `sudo fiero-hotspot stop` by hand while the systemd service is active simply runs `systemctl stop fiero-hotspot.service`.
 
 ### IPC & Prompts
 
-Root-to-user notification routing is handled via D-Bus. `fiero-prompt.sh` sets `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` and invokes `notify-send` to present interactive actions (`Start`/`Ignore`/`Keep Running`). A timestamp-based cooldown file (`/run/user/<uid>/fiero-prompt.state`) debounces rapid udev event clusters (11-second window). A separate `flock` on `/run/user/<uid>/fiero-prompt.lock` prevents concurrent prompt invocations.
+Root-to-user notification routing is handled via D-Bus. `fiero-prompt.sh` sets `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` and invokes `notify-send` to present interactive actions (`Start`/`Ignore`/`Keep Running`). A timestamp-based cooldown file (`/run/user/<uid>/fiero-prompt.state`) debounces rapid udev event clusters (11-second window). A `flock` on `/run/user/<uid>/fiero-prompt.lock` serialises that debounce step (it is not held while the notification is on screen). If the charger state flips while a prompt is still open, the stale prompt is cancelled.
+
+If nobody answers the "Start?" prompt, **nothing is started** unless `AUTO_START_ON_TIMEOUT='true'` is set in the config: starting a Wi-Fi network should need a clear "yes". If nobody answers the "Stop?" prompt after unplugging, the hotspot is stopped (the safe choice on battery).
 
 ## Installation & Removal
 
@@ -123,11 +125,11 @@ The installer:
 2. Detects the Wi-Fi interface and AC power supply via `/sys/class/power_supply/`
 3. Parses supported channels from `iw phy <phyN> info`, excluding restricted frequencies
 4. Prompts for SSID and password (min 8 chars, WPA2 requirement)
-5. Writes configuration to `/etc/fiero-hotspot.conf` (mode `640`, owned `root:<user>`; the runtime validators also accept mode `600`)
+5. Writes configuration to `/etc/fiero-hotspot.conf` (on a re-install you can keep the existing one) (mode `640`, owned `root:<user>`; the runtime validators also accept mode `600`)
 6. Installs binaries to `/usr/local/bin/fiero-hotspot` and `/usr/local/bin/fiero-prompt`
 7. Installs the systemd unit to `/etc/systemd/system/fiero-hotspot.service`
 8. Installs the udev rule to `/etc/udev/rules.d/99-fiero-hotspot.rules`
-9. Creates a sudoers drop-in at `/etc/sudoers.d/fiero-hotspot` granting the target user passwordless `systemctl start|stop` for `fiero-hotspot.service`
+9. Creates a sudoers drop-in at `/etc/sudoers.d/fiero-hotspot` granting the target user passwordless `systemctl start|stop` for `fiero-hotspot.service`. The rule is validated with `visudo -c` *before* it is put in place, so a bad rule can never break `sudo`.
 10. Reloads udev rules and systemd daemon
 
 ### Configuration
@@ -144,6 +146,7 @@ File: `/etc/fiero-hotspot.conf`
 | `TARGET_USER` | User for notification routing |
 | `TARGET_UID` | UID of `TARGET_USER` |
 | `AUTO_PROMPT` | `true` for automatic D-Bus prompt on AC events, `false` for CLI-only control |
+| `AUTO_START_ON_TIMEOUT` | `true` to start the hotspot when the "Start?" prompt is not answered; default `false` |
 
 ### Enable & Start
 
@@ -195,7 +198,7 @@ fiero-hotspot help                # Print usage menu (also: -h, --help, or no ar
   11:22:33:44:55:66  -62 dBm    192.168.12.11   -
 ```
 
-IP and hostname are resolved from `/var/lib/misc/dnsmasq.leases` (and any `create_ap` runtime lease files). Fields default to `-` when unavailable.
+IP and hostname are resolved from the lease file of Fiero's `create_ap` instance (read through `/proc/<pid>/root`, because the service runs with a private `/tmp`) and `/var/lib/misc/dnsmasq.leases`. Fields default to `-` when unavailable.
 
 ### Uninstall
 
@@ -203,7 +206,7 @@ IP and hostname are resolved from `/var/lib/misc/dnsmasq.leases` (and any `creat
 sudo ./uninstall.sh
 ```
 
-Removes all installed files, stops/disables the service, and reloads udev/systemd.
+Removes all installed files, stops/disables the service, and reloads udev/systemd. Use `sudo ./uninstall.sh --keep-config` to keep `/etc/fiero-hotspot.conf` for a later re-install.
 
 ## Diagnostics & Test Suite
 
@@ -217,7 +220,7 @@ Requires root and a valid `/etc/fiero-hotspot.conf` with `INTERFACE`, `TARGET_US
 
 ### Test Phases
 
-The harness executes **104 edge-case tests** across all phases:
+The harness executes over 100 edge-case checks across all phases. Phase 9 tests the *installed* copy (`/usr/local/bin/fiero-hotspot`) and fails if it differs from the repository copy - re-run `install.sh` after changing the code.
 
 | Phase | Tests | Description |
 |-------|-------|-------------|
@@ -269,7 +272,7 @@ All output is logged to `./test-logs-<timestamp>/`:
 summary.txt
 ```
 
-Exit code `0` = all tests passed. Exit code `1` = hard failure (orphan leak, interface leak, dmesg crash, edge-case failure, or lifecycle timeout).
+Exit code `0` = all tests passed, including a real start/stop of the hotspot. Exit code `1` = hard failure (orphan leak, interface leak, dmesg crash, edge-case failure, or lifecycle timeout). Exit code `2` = **incomplete**: no failures, but the hotspot lifecycle was skipped because upstream Wi-Fi was on an unsupported channel - connect to a supported channel and re-run.
 
 ### Reporting Issues
 
@@ -287,7 +290,11 @@ Attach `summary.txt`, `lspci.txt`, and `iw_list.txt` along with your `/etc/fiero
 
 ### Runtime Credential Visibility (Process Table)
 
-`create_ap` accepts the WPA2 passphrase as a command-line argument. On standard multi-user systems (without `procfs` mounted with `hidepid=2`), the cleartext passphrase is visible in the process table (`ps aux` / `/proc/$PID/cmdline`) to any unprivileged local user while the hotspot is active. For environments where this is a concern, mount `/proc` with `hidepid=2` and grant access only to specific UIDs.
+The passphrase is handed to `create_ap` through a root-only (`0600`) config file, `/run/fiero-hotspot/create_ap.conf`, which is deleted as soon as the AP is up, so it does not appear in `ps` or `/proc/<pid>/cmdline`.
+
+`create_ap` reads that file with `read` (without `-r`), which drops backslashes and trims leading/trailing spaces. The installer therefore rejects such SSIDs/passphrases. For an older config that contains one, Fiero falls back to passing it on the command line (visible to local users) and logs a warning; mount `/proc` with `hidepid=2` if that matters on a shared machine.
+
+The passphrase is stored in `/etc/fiero-hotspot.conf`, which the target user can read (mode `640 root:<user>`).
 
 ### Single-Radio Throughput Penalty
 
@@ -325,7 +332,7 @@ Requires a physical wireless adapter exposing an `nl80211` interface capable of 
 
 ## Systemd Hardening Rationale
 
-The systemd service achieves a **5.7 MEDIUM** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 8.2 EXPOSED in v1.2.0. The remaining 5.7 score is the architectural floor for this release — three directives are intentionally omitted because they break essential functionality:
+The systemd service achieves a **4.2 OK** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 5.7 MEDIUM in v1.4.1 and 8.2 EXPOSED in v1.2.0. `PrivateTmp=true` is required: with `ProtectSystem=strict` the rest of the filesystem is read-only, and `create_ap` needs a writable `/tmp`. `ReadWritePaths=-/etc/NetworkManager` lets `create_ap` mark its virtual interface as unmanaged. Three directives are intentionally omitted because they break essential functionality:
 
 ### NoNewPrivileges=true (omitted)
 
@@ -342,7 +349,7 @@ Mounts `/proc/sys` read-only. `create_ap` writes to `net.ipv4.ip_forward` during
 ### Why Root Execution and CAP_NET_ADMIN Are Required
 
 - **Root**: NAT routing via `iptables` requires root privileges. The service runs as root and uses `sudo -u $TARGET_USER` to drop privileges for user-facing operations.
-- **CAP_NET_ADMIN**: Required for `iptables` rule management and `create_ap` network namespace operations. This capability cannot be replaced with user-level alternatives for NAT.
+- **CAP_NET_ADMIN**: Required for `iptables` rule management and `hostapd`/interface configuration. This capability cannot be replaced with user-level alternatives for NAT.
 - **D-Bus SASL**: Root cannot connect directly to `/run/user/$UID/bus` because D-Bus validates the connecting UID via SASL EXTERNAL authentication. The daemon routes through `sudo -u $TARGET_USER` to match the socket owner's UID.
 
 ## Developer Notes
@@ -368,13 +375,13 @@ I will do occasional updates to this project whenever I am free to do so, but pl
 
 ### Built with AI, Verified with Ironclad Constraints
 The implementation was vibe-coded using LLMs via OpenCode, under strict systems engineering constraints:
-- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict 104-pass bash test harness (`test_harness.sh`).
+- **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
 - **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.
 - **Live USB Boot testing:** Tested in a live boot environment (Arch-Based Garuda Linux iso)
 
-AI handled the rapid boilerplate; strict verification and POSIX compliance rules kept the codebase production-grade. But the idea was fully mine.
+AI handled the rapid boilerplate; strict verification and ShellCheck rules kept the codebase production-grade. But the idea was fully mine.
 
 ## License
 

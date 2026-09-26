@@ -21,3 +21,7 @@ TARGET_UID='1000'
 
 # Automatic prompt behavior ('true' for D-Bus notification prompt on AC, 'false' for CLI-only control)
 AUTO_PROMPT='true'
+
+# If nobody answers the "Start?" prompt: 'true' starts the hotspot anyway,
+# 'false' (default) does nothing. Starting a Wi-Fi network should need a clear yes.
+AUTO_START_ON_TIMEOUT='false'
