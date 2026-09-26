@@ -36,6 +36,8 @@ fi
 
 echo
 echo "=== bats ==="
+# A regression that makes the daemon hang must fail fast, not block CI.
+export BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-120}"
 bats --print-output-on-failure "${suites[@]}" || rc=1
 
 exit "$rc"
