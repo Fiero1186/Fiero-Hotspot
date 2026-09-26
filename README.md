@@ -2,6 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-v1.5.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
+[![CI](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml/badge.svg)](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml)
 
 ## Overview
 
@@ -210,7 +211,15 @@ Removes all installed files, stops/disables the service, and reloads udev/system
 
 ## Diagnostics & Test Suite
 
-### Running
+### Automated Tests (no Wi-Fi hardware needed)
+
+```bash
+tests/run.sh
+```
+
+Runs in a throwaway Docker container, exactly like CI does on every pull request: ShellCheck on every script, a `systemd-analyze security` check (exposure must stay at or below 5.0), and bats suites that drive the real `fiero-hotspot.sh`, `fiero-prompt.sh`, `install.sh` and `uninstall.sh` against test doubles of `create_ap`, `iw`, `notify-send` and a fake charger. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Running the On-Hardware Harness
 
 ```bash
 sudo ./test_harness.sh

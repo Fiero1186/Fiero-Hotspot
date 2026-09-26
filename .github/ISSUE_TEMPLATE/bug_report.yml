@@ -1,0 +1,57 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **remove your Wi-Fi passphrase and other private data** from anything you paste.
+        Security problems: use private vulnerability reporting instead (see SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Fiero version
+      description: Output of `fiero-hotspot version`
+      placeholder: fiero-hotspot v1.5.0
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and kernel
+      placeholder: Arch Linux, 6.x.y-arch1-1
+    validations:
+      required: true
+  - type: textarea
+    id: card
+    attributes:
+      label: Wi-Fi card
+      description: Output of `lspci -k | grep -A3 -i network` (or `lsusb` for USB adapters)
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: iwlist
+    attributes:
+      label: Interface combinations
+      description: The "valid interface combinations" part of `iw list`
+      render: text
+  - type: textarea
+    id: journal
+    attributes:
+      label: Service log
+      description: Output of `journalctl -u fiero-hotspot.service -b --no-pager`
+      render: text
+  - type: textarea
+    id: status
+    attributes:
+      label: Status
+      description: Output of `sudo fiero-hotspot status`
+      render: text

@@ -1,0 +1,50 @@
+name: Hardware report
+description: Tell us whether Fiero works on your laptop / Wi-Fi card
+labels: [hardware]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports build the hardware compatibility list. Both "it works" and "it doesn't" are useful!
+  - type: dropdown
+    id: result
+    attributes:
+      label: Does it work?
+      options:
+        - "Yes - hotspot starts and clients can connect"
+        - "Partly (explain below)"
+        - "No"
+    validations:
+      required: true
+  - type: input
+    id: laptop
+    attributes:
+      label: Laptop model
+      placeholder: ASUS Vivobook 16 (X1605ZA)
+    validations:
+      required: true
+  - type: textarea
+    id: card
+    attributes:
+      label: Wi-Fi card
+      description: Output of `lspci -k | grep -A3 -i network` (or `lsusb` for USB adapters)
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and kernel
+      placeholder: Fedora 44, 6.x.y
+    validations:
+      required: true
+  - type: input
+    id: bands
+    attributes:
+      label: Upstream band / channel you tested
+      placeholder: 2.4 GHz channel 6
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything special - e.g. 5 GHz refused, needed --no-virt, USB-C charger not detected
