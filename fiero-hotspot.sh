@@ -31,6 +31,7 @@ PID_FILE="$RUN_DIR/create_ap.pid"
 CONFDIR_FILE="$RUN_DIR/confdir"
 IFACE_FILE="$RUN_DIR/ap_iface"
 STOP_FLAG="$RUN_DIR/stopping"
+AP_CONF="$RUN_DIR/create_ap.conf"
 
 UPSTREAM_GRACE=15
 AP_START_TIMEOUT=8
@@ -197,11 +198,42 @@ is_confdir_path() {
     [[ "${1:-}" =~ ^/tmp/create_ap\.[A-Za-z0-9_.-]+\.conf\.[A-Za-z0-9]+$ ]]
 }
 
+# create_ap parses --config files with a plain `read` (no -r): backslashes
+# are dropped and leading/trailing whitespace is trimmed. Only values that
+# survive that unchanged can go through the file.
+config_safe_value() {
+    case "$1" in *\\*) return 1 ;; esac
+    [ "$1" = "${1#[[:space:]]}" ] && [ "$1" = "${1%[[:space:]]}" ]
+}
+
+# Write a root-only (0600) create_ap config so the passphrase never appears
+# on a command line, where any local user could read it via ps or
+# /proc/<pid>/cmdline.
+write_create_ap_config() {
+    local ch="$1"
+    config_safe_value "$SSID" && config_safe_value "$PASSWORD" || return 1
+    (
+        umask 077
+        {
+            printf 'WIFI_IFACE=%s\n' "$INTERFACE"
+            printf 'INTERNET_IFACE=%s\n' "$INTERFACE"
+            printf 'SSID=%s\n' "$SSID"
+            printf 'PASSPHRASE=%s\n' "$PASSWORD"
+            printf 'CHANNEL=%s\n' "$ch"
+        } >"$AP_CONF"
+    )
+}
+
 launch_create_ap() {
     local ch="$1"
     ensure_run_dir
     rm -f "$CONFDIR_FILE" "$IFACE_FILE"
-    create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$ch" 9>&- &
+    if write_create_ap_config "$ch"; then
+        create_ap --config "$AP_CONF" 9>&- &
+    else
+        log "WARN" "SSID or password contains a backslash or leading/trailing spaces, which create_ap's config file cannot hold. Passing them on the command line instead (visible to local users via ps)."
+        create_ap "$INTERFACE" "$INTERFACE" "$SSID" "$PASSWORD" -c "$ch" 9>&- &
+    fi
     CREATE_AP_PID=$!
     printf '%s\n' "$CREATE_AP_PID" >"$PID_FILE"
 }
@@ -219,6 +251,8 @@ wait_for_ap() {
                 pgrep -f "hostapd.*$(escape_regex "$confdir")/hostapd.conf" >/dev/null; then
                 printf '%s\n' "$confdir" >"$CONFDIR_FILE"
                 printf '%s\n' "$ap_iface" >"$IFACE_FILE"
+                # create_ap has read its config; don't keep the passphrase around
+                rm -f "$AP_CONF"
                 return 0
             fi
         fi
@@ -287,7 +321,7 @@ stop_create_ap() {
     fi
 
     CREATE_AP_PID=""
-    rm -f "$PID_FILE" "$CONFDIR_FILE" "$IFACE_FILE"
+    rm -f "$PID_FILE" "$CONFDIR_FILE" "$IFACE_FILE" "$AP_CONF"
 }
 
 cleanup() {
