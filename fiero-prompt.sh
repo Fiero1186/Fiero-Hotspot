@@ -19,18 +19,17 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-# Prevent udev bounce spam with non-blocking lock
+# Serialises the debounce/supersede step below. Held only for that step, not
+# while the notification is on screen, so a charger flip during an open
+# prompt can still reach the code that cancels the stale prompt.
 USER_LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fiero-prompt.lock"
-exec 9>"$USER_LOCK"
-if ! flock -n 9; then
-    exit 0
-fi
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 if [ -r "$CONFIG_FILE" ]; then
     conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
     conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
     if [ "$conf_owner" = "root" ] && { [ "$conf_perms" = "640" ] || [ "$conf_perms" = "600" ]; }; then
+        # shellcheck disable=SC1090
         source "$CONFIG_FILE"
     fi
 fi
@@ -55,7 +54,7 @@ freq_to_channel() {
 }
 
 get_channel() {
-    local line freq
+    local line
     line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
     [ -n "$line" ] || return 1
     FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
@@ -102,18 +101,14 @@ else
     current_state="offline"
 fi
 
-# --- Service state awareness: don't prompt when there is nothing to do.
-if [ "$current_state" = "online" ] && systemctl is-active --quiet fiero-hotspot.service; then
-    exit 0
-fi
-if [ "$current_state" = "offline" ] && ! systemctl is-active --quiet fiero-hotspot.service; then
-    exit 0
-fi
-
 # --- Timestamp cooldown debounce: udev power events fire in clusters 1-3s apart.
 # The state file persists (never deleted) so duplicate events stay blocked even if
 # the user clicks an action immediately after our run.
 mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+exec 9>"$USER_LOCK"
+if ! flock -w 5 9; then
+    exit 0
+fi
 now=$(date +%s)
 
 if [ -f "$STATE_FILE" ]; then
@@ -142,6 +137,24 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 echo "$now:$current_state:$$" >"$STATE_FILE"
+flock -u 9
+exec 9>&-
+
+# A newer charger event may have replaced this prompt while it was open.
+still_current() {
+    [ "$(cut -d: -f3 "$STATE_FILE" 2>/dev/null)" = "$$" ]
+}
+
+# --- Service state awareness: don't prompt when there is nothing to do.
+# This runs after the state update above, so that e.g. unplugging while a
+# "Start?" prompt is open still cancels that prompt even though nothing needs
+# stopping.
+if [ "$current_state" = "online" ] && systemctl is-active --quiet fiero-hotspot.service; then
+    exit 0
+fi
+if [ "$current_state" = "offline" ] && ! systemctl is-active --quiet fiero-hotspot.service; then
+    exit 0
+fi
 
 if [ "$current_state" = "online" ]; then
     refresh_supported_channels
@@ -172,12 +185,17 @@ if [ "$current_state" = "online" ]; then
         --expire-time=10000 \
         --action="start=Start" \
         --action="ignore=Ignore")
-    # Explicit ignore -> exit. Timeout -> fallback only if still on AC.
+    still_current || exit 0
+    # Explicit ignore -> exit. Timeout or dismissed -> start only if the user
+    # opted in (AUTO_START_ON_TIMEOUT='true') and we are still on AC.
+    # Broadcasting a network should need a clear "yes".
     if [ "$result" = "ignore" ]; then
         exit 0
     fi
-    if [ -z "$result" ] && ! ac_online; then
-        exit 0
+    if [ -z "$result" ]; then
+        if [ "${AUTO_START_ON_TIMEOUT:-false}" != "true" ] || ! ac_online; then
+            exit 0
+        fi
     fi
     sudo -n /usr/bin/systemctl start fiero-hotspot.service
 else
@@ -186,7 +204,9 @@ else
         --expire-time=10000 \
         --action="stop=Stop" \
         --action="keep=Keep Running")
-    # Explicit keep -> exit. Timeout -> fallback only if still unplugged.
+    still_current || exit 0
+    # Explicit keep -> exit. Timeout -> stop (the safe choice on battery),
+    # but only if still unplugged.
     if [ "$result" = "keep" ]; then
         exit 0
     fi
