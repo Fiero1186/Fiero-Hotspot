@@ -2,6 +2,7 @@
 set -u
 
 FAILURES=0
+SKIPPED=()
 
 echo "=== 1. Shell Syntax Verification (bash -n) ==="
 while IFS= read -r -d '' script; do
@@ -24,7 +25,8 @@ if command -v shellcheck >/dev/null 2>&1; then
         FAILURES=$((FAILURES + 1))
     fi
 else
-    echo "[WARN] shellcheck not installed."
+    echo "[SKIP] shellcheck not installed."
+    SKIPPED+=("shellcheck")
 fi
 
 echo -e "\n=== 3. Systemd Unit Sandboxing (systemd-analyze) ==="
@@ -41,14 +43,19 @@ echo -e "\n=== 4. Secret & Token Detection (gitleaks) ==="
 if command -v gitleaks >/dev/null 2>&1; then
     gitleaks detect --no-git --verbose || FAILURES=$((FAILURES + 1))
 else
-    echo "[INFO] gitleaks not installed."
+    echo "[SKIP] gitleaks not installed."
+    SKIPPED+=("gitleaks")
 fi
 
 echo -e "\n----------------------------------------"
-if [ "$FAILURES" -eq 0 ]; then
-    echo "Repository audit clean. Zero defects found."
-    exit 0
-else
+if [ "$FAILURES" -ne 0 ]; then
     echo "Audit finished with $FAILURES failure(s)."
     exit 1
+elif [ "${#SKIPPED[@]}" -ne 0 ]; then
+    # Never report "clean" for checks that did not run.
+    echo "Audit INCOMPLETE: no failures, but these checks were skipped: ${SKIPPED[*]}"
+    exit 2
+else
+    echo "Repository audit clean. Zero defects found."
+    exit 0
 fi
