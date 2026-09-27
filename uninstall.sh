@@ -35,6 +35,7 @@ echo "Removed /usr/local/bin/fiero-hotspot"
 
 rm -f /usr/local/bin/fiero-prompt
 echo "Removed /usr/local/bin/fiero-prompt"
+pkill -f 'fiero-prompt watch' 2>/dev/null || true
 
 rm -f /etc/sudoers.d/fiero-hotspot /etc/sudoers.d/.fiero-hotspot.tmp
 echo "Removed /etc/sudoers.d/fiero-hotspot"

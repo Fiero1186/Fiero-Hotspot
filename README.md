@@ -85,17 +85,21 @@ The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses
 udev event (AC online/offline)
   └─> 99-fiero-hotspot.rules
         └─> systemd-run --no-block -- su - <user> -c /usr/local/bin/fiero-prompt
+              ├─> setsid --fork fiero-prompt watch   (detached event watcher, one per session)
               └─> sudo -n systemctl start/stop fiero-hotspot.service
                     └─> /usr/local/bin/fiero-hotspot {start|stop}
-                          └─> flock -n /run/fiero-hotspot.lock
-                                └─> create_ap --config /run/fiero-hotspot/create_ap.conf
+                          ├─> flock -n /run/fiero-hotspot.lock
+                          ├─> create_ap --config /run/fiero-hotspot/create_ap.conf
+                          └─> set_state → /run/fiero-hotspot/state + events
+                                └─> fiero-prompt watch (tail -n0 -F, inotify)
+                                      └─> notify-send (as the logged-in user)
 ```
 
-The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly.
+The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly. The first prompt run also spawns a detached, flock-serialized event watcher (`fiero-prompt watch`) that stays alive for the session.
 
 ### Signal Handling
 
-Fiero only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0700`, created by systemd's `RuntimeDirectory=`): the `create_ap` PID, the `create_ap` config directory, and the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`).
+Fiero only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0755`, created by systemd's `RuntimeDirectory=`; world-readable so the unprivileged event watcher can read the IPC files): the `create_ap` PID, the `create_ap` config directory, the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`), the atomic state snapshot (`state`), and the append-only event stream (`events`). The temporary `create_ap.conf` holding the WPA passphrase stays protected by its own mode `0600` — the readable directory is not a secret leak.
 
 `fiero-hotspot.sh start` traps `EXIT`, `INT`, and `TERM`. Stopping (by the trap, by `fiero-hotspot stop`, or on a channel change):
 
@@ -108,7 +112,7 @@ Hotspots started by other tools (for example the linux-wifi-hotspot GUI) are lef
 
 ### IPC & Prompts
 
-Root-to-user notification routing is handled via D-Bus. `fiero-prompt.sh` sets `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` and invokes `notify-send` to present interactive actions (`Start`/`Ignore`/`Keep Running`). A timestamp-based cooldown file (`/run/user/<uid>/fiero-prompt.state`) debounces rapid udev event clusters (11-second window). A `flock` on `/run/user/<uid>/fiero-prompt.lock` serialises that debounce step (it is not held while the notification is on screen). If the charger state flips while a prompt is still open, the stale prompt is cancelled.
+The root daemon never touches the desktop. Every state transition is written by `set_state` as an atomic snapshot to `/run/fiero-hotspot/state` (`STATE`/`MSG`/`CHANNEL`/`TIMESTAMP` assignments) and appended as a pipe-delimited record (`STATE|MSG|CHANNEL|TS`) to `/run/fiero-hotspot/events` (both mode `0644`). The unprivileged `fiero-prompt watch` daemon tails the event file with `tail -n0 -F` (kernel inotify; zero CPU wakeups while idle) and raises `notify-send` notifications, with urgency mapped from the state (`ERROR`/`DISCONNECTED`/`CHANNEL_UNSUPPORTED` → critical, `STARTING`/`CHANNEL_DRIFT` → low). Interactive prompts (Start/Ignore/Keep Running) remain D-Bus-based: `fiero-prompt.sh` sets `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` and invokes `notify-send`. A timestamp-based cooldown file (`/run/user/<uid>/fiero-prompt.state`) debounces rapid udev event clusters (11-second window). A `flock` on `/run/user/<uid>/fiero-prompt.lock` serialises that debounce step (it is not held while the notification is on screen). If the charger state flips while a prompt is still open, the stale prompt is cancelled.
 
 If nobody answers the "Start?" prompt, **nothing is started** unless `AUTO_START_ON_TIMEOUT='true'` is set in the config: starting a Wi-Fi network should need a clear "yes". If nobody answers the "Stop?" prompt after unplugging, the hotspot is stopped (the safe choice on battery).
 
@@ -341,15 +345,7 @@ Requires a physical wireless adapter exposing an `nl80211` interface capable of 
 
 ## Systemd Hardening Rationale
 
-The systemd service achieves a **4.2 OK** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 5.7 MEDIUM in v1.4.1 and 8.2 EXPOSED in v1.2.0. `PrivateTmp=true` is required: with `ProtectSystem=strict` the rest of the filesystem is read-only, and `create_ap` needs a writable `/tmp`. `ReadWritePaths=-/etc/NetworkManager` lets `create_ap` mark its virtual interface as unmanaged. Three directives are intentionally omitted because they break essential functionality:
-
-### NoNewPrivileges=true (omitted)
-
-Required for PAM session establishment. The daemon calls `sudo -u $TARGET_USER notify-send` to route desktop notifications to the logged-in user's D-Bus session. `NoNewPrivileges=true` blocks PAM's `pam_open_session`, causing `Permission denied` on every notification attempt.
-
-### RestrictRealtime=true (omitted)
-
-Locks `RLIMIT_RTPRIO=0`, conflicting with user realtime audio limits configured in `/etc/security/limits.conf`. Removing this directive allows PAM's resource limit stack to function correctly for the target user.
+The systemd service achieves a **3.0 OK** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 4.2 OK in Phase 1, 5.7 MEDIUM in v1.4.1 and 8.2 EXPOSED in v1.2.0. `PrivateTmp=true` is required: with `ProtectSystem=strict` the rest of the filesystem is read-only, and `create_ap` needs a writable `/tmp`. `ReadWritePaths=-/etc/NetworkManager` lets `create_ap` mark its virtual interface as unmanaged. One directive is intentionally omitted because it breaks essential functionality:
 
 ### ProtectKernelTunables=true (omitted)
 
@@ -357,9 +353,9 @@ Mounts `/proc/sys` read-only. `create_ap` writes to `net.ipv4.ip_forward` during
 
 ### Why Root Execution and CAP_NET_ADMIN Are Required
 
-- **Root**: NAT routing via `iptables` requires root privileges. The service runs as root and uses `sudo -u $TARGET_USER` to drop privileges for user-facing operations.
+- **Root**: NAT routing via `iptables` requires root privileges.
 - **CAP_NET_ADMIN**: Required for `iptables` rule management and `hostapd`/interface configuration. This capability cannot be replaced with user-level alternatives for NAT.
-- **D-Bus SASL**: Root cannot connect directly to `/run/user/$UID/bus` because D-Bus validates the connecting UID via SASL EXTERNAL authentication. The daemon routes through `sudo -u $TARGET_USER` to match the socket owner's UID.
+- **Privilege separation**: The daemon does not talk to the desktop at all. It only writes `state`/`events` files (mode `0644`) into `/run/fiero-hotspot` (mode `0755`); the unprivileged `fiero-prompt watch` daemon reads them and calls `notify-send` in the user's own session — no `sudo`, no PAM, no D-Bus SASL workarounds.
 
 ## Developer Notes
 
@@ -387,7 +383,7 @@ The implementation was vibe-coded using LLMs via OpenCode, under strict systems 
 - **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
-- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`). `ProtectHome=read-only` keeps `/home` and `/root` write-protected while unmasking `/run/user`, allowing the daemon to access the user session's D-Bus socket for desktop notifications.
+- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`), now with `NoNewPrivileges=true`, `RestrictRealtime=true` and a capability set of `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE` active — exposure score 3.0 OK. Desktop notifications flow through `/run/fiero-hotspot/events` instead of a root→user D-Bus hop.
 - **Live USB Boot testing:** Tested in a live boot environment (Arch-Based Garuda Linux iso)
 
 AI handled the rapid boilerplate; strict verification and ShellCheck rules kept the codebase production-grade. But the idea was fully mine.

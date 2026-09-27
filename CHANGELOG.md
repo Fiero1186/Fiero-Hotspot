@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format is based on
   working directory. `PrivateTmp=true` is back.
 - Restored the `CAP_CHOWN` and `CAP_SYS_RESOURCE` capabilities (dnsmasq, and the PAM
   session used for desktop notifications) and dropped `RestrictRealtime=true`.
+  *(Temporary Phase 1 measure — fully superseded by the decoupled IPC architecture
+  below: those capabilities are dropped permanently and `RestrictRealtime=true` is
+  restored.)*
 - `create_ap` can write NetworkManager's `unmanaged-devices` setting again
   (`ReadWritePaths=-/etc/NetworkManager`).
 - Stopping the hotspot waits for `create_ap` to finish its own cleanup. Before, Fiero
@@ -39,6 +42,17 @@ All notable changes to this project are documented here. The format is based on
 ### Security
 - The WPA passphrase is passed to `create_ap` through a root-only config file instead
   of the command line, so local users can no longer read it with `ps`.
+- **Complete removal of PAM session jumping from the root daemon.** The daemon no
+  longer runs `sudo -u $TARGET_USER notify-send`; desktop notifications are emitted
+  by an unprivileged event watcher reading `/run/fiero-hotspot/events`.
+- Re-enabled `NoNewPrivileges=true` and `RestrictRealtime=true` in
+  `fiero-hotspot.service` (both previously omitted for the PAM hop).
+- Reduced `CapabilityBoundingSet` to the network essentials
+  (`CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`), dropping `CAP_SETUID`,
+  `CAP_SETGID`, `CAP_KILL`, `CAP_DAC_OVERRIDE`, `CAP_SYS_RESOURCE`, `CAP_CHOWN` and
+  `CAP_AUDIT_WRITE`.
+- Exposure score improves from **4.2 OK** to **3.0 OK**
+  (`systemd-analyze security`).
 
 ### Changed
 - If nobody answers the "Start?" prompt, the hotspot is **not** started anymore. Set
@@ -47,10 +61,18 @@ All notable changes to this project are documented here. The format is based on
   asks which interface to use when there are several, and rejects SSIDs/passphrases
   that `create_ap`'s config parser would change (backslashes, surrounding spaces).
 - `uninstall.sh --keep-config` keeps `/etc/fiero-hotspot.conf`.
+- Replaced the synchronous `notify()` in the root daemon with an atomic state snapshot
+  (`/run/fiero-hotspot/state`) and a kernel-inotify event stream
+  (`/run/fiero-hotspot/events`, `STATE|MSG|CHANNEL|TS` records). `/run/fiero-hotspot`
+  is now mode `0755` (IPC files `0644`); the passphrase file stays `0600`.
 
 ### Added
 - `.gitattributes` (LF line endings on every platform) and `.editorconfig`.
 - This changelog.
+- Detached unprivileged event watcher mode in `fiero-prompt.sh` (`fiero-prompt watch`):
+  tails the daemon's event stream via `tail -n0 -F` and raises desktop notifications
+  with state-based urgency; one flock-guarded instance per user session, spawned
+  automatically by the first prompt run.
 
 ## [1.5.0] - 2026-09-23 (not tagged)
 - systemd sandbox changes (`PrivateTmp=false`, `RestrictRealtime`, fewer capabilities)

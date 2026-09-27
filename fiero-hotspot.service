@@ -13,11 +13,14 @@ ExecStop=/usr/local/bin/fiero-hotspot stop
 TimeoutStopSec=30s
 Restart=no
 
-# /run/fiero-hotspot (mode 0700) holds the create_ap config file (with the
-# passphrase), the create_ap PID and the AP interface name. systemd creates it
-# on start and removes it on stop.
+# /run/fiero-hotspot (mode 0755) holds the create_ap config file (with the
+# passphrase), the create_ap PID, the AP interface name, and the state/event
+# IPC files that the unprivileged watcher in fiero-prompt.sh reads. systemd
+# creates it on start and removes it on stop. Secrets are protected by their
+# own 0600 file modes (write_create_ap_config uses umask 077), not by the
+# directory mode.
 RuntimeDirectory=fiero-hotspot
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0755
 
 # Hardening
 # ProtectSystem=strict makes the whole filesystem read-only. /tmp is only
@@ -26,8 +29,7 @@ RuntimeDirectoryMode=0700
 # when the service stops, so no stale create_ap directories survive a crash.
 PrivateTmp=true
 ProtectSystem=strict
-# ProtectHome=read-only locks /home and /root; D-Bus session socket access
-# under /run/user/$UID/bus is restored via ReadWritePaths=/run.
+# ProtectHome=read-only locks /home and /root.
 ProtectHome=read-only
 # create_ap writes unmanaged-devices= into NetworkManager.conf so that
 # NetworkManager leaves the virtual AP interface alone. The "-" prefix keeps
@@ -38,6 +40,8 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectClock=true
 RestrictSUIDSGID=true
+RestrictRealtime=true
+NoNewPrivileges=true
 LockPersonality=true
 ProtectHostname=true
 MemoryDenyWriteExecute=true
@@ -48,16 +52,14 @@ ProtectControlGroups=true
 SystemCallFilter=~@clock @debug @module @mount @obsolete @cpu-emulation @raw-io @reboot @swap
 
 # Intentionally omitted hardening directives:
-# - NoNewPrivileges=true: breaks PAM session for sudo -u $TARGET_USER notify-send
-# - RestrictRealtime=true: conflicts with PAM limits applied by sudo for the target user
 # - ProtectKernelTunables=true: blocks create_ap from writing net.ipv4.ip_forward
 # See README.md "Systemd Hardening Rationale" for architectural justification.
 
-# Capabilities required for NAT routing (iptables, hostapd), dnsmasq
-# (bind :53/:67, drop to nobody, chown lease/pid files) and the PAM session
-# opened by `sudo -u $TARGET_USER notify-send` (pam_limits needs
-# CAP_SYS_RESOURCE, pam_loginuid/audit needs CAP_AUDIT_WRITE).
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_RESOURCE CAP_CHOWN CAP_AUDIT_WRITE CAP_KILL CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
+# Capabilities required for NAT routing (iptables, hostapd) and dnsmasq
+# (bind :53/:67, run as nobody). Desktop notifications are emitted by the
+# unprivileged watcher in fiero-prompt.sh reading /run/fiero-hotspot/events,
+# so no user-switching, kill or audit capabilities are needed here.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

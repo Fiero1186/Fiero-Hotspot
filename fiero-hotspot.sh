@@ -19,19 +19,23 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-VERSION="1.5.0"
+VERSION="2.0.0"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 LOCK_FILE="/run/fiero-hotspot.lock"
 
 # Per-instance state. Created by systemd (RuntimeDirectory=) or by us when
-# running in the foreground. Only root can read it (mode 0700).
+# running in the foreground. The directory is world-readable (0755) so the
+# unprivileged event watcher (fiero-prompt.sh) can read state/events; secrets
+# (the create_ap passphrase) are protected by their own 0600 file modes.
 RUN_DIR="/run/fiero-hotspot"
 PID_FILE="$RUN_DIR/create_ap.pid"
 CONFDIR_FILE="$RUN_DIR/confdir"
 IFACE_FILE="$RUN_DIR/ap_iface"
 STOP_FLAG="$RUN_DIR/stopping"
 AP_CONF="$RUN_DIR/create_ap.conf"
+STATE_FILE="$RUN_DIR/state"
+EVENTS_FILE="$RUN_DIR/events"
 
 UPSTREAM_GRACE=15
 AP_START_TIMEOUT=8
@@ -88,16 +92,30 @@ log() {
     fi
 }
 
-notify() {
-    local msg="$1"
-    if [ -z "${TARGET_USER:-}" ] || [ -z "${TARGET_UID:-}" ]; then
-        log "WARN" "TARGET_USER/TARGET_UID not set; skipping desktop notification."
-        return 0
-    fi
-    sudo -u "$TARGET_USER" env \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${TARGET_UID}/bus" \
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" \
-        /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" --icon=network-wireless 2>/dev/null || true
+# State/event IPC: the root daemon never touches the desktop. It publishes an
+# atomic state snapshot ($STATE_FILE) and an append-only event stream
+# ($EVENTS_FILE, STATE|MSG|CHANNEL|TS) that the unprivileged watcher in
+# fiero-prompt.sh reads via inotify (tail -F).
+# ponytail: a "|" or newline in MSG would shift trailing fields, so both are
+# flattened; upgrade to length-prefixed records if messages ever need pipes.
+set_state() {
+    local state="$1" msg="${2:-}" ts tmp
+    ts=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
+    msg=$(printf '%s' "$msg" | tr '\n|' '  ')
+    mkdir -p "$RUN_DIR" 2>/dev/null || true
+    chmod 755 "$RUN_DIR" 2>/dev/null || true
+
+    # 1. Atomic state snapshot for CLI / inspection
+    tmp="$RUN_DIR/.state.tmp.$$"
+    {
+        printf 'STATE="%s"\nMSG="%s"\nCHANNEL="%s"\nTIMESTAMP="%s"\n' \
+            "$state" "$msg" "${CHANNEL:-}" "$ts"
+    } >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null
+    mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp"
+
+    # 2. Append to the event stream (tail -F watchers wake on write)
+    printf '%s|%s|%s|%s\n' "$state" "$msg" "${CHANNEL:-}" "$ts" >>"$EVENTS_FILE" 2>/dev/null || true
+    chmod 644 "$EVENTS_FILE" 2>/dev/null || true
 }
 
 # --- Configuration ---
@@ -161,7 +179,7 @@ ac_online() {
 CREATE_AP_PID=""
 
 ensure_run_dir() {
-    install -d -m 0700 "$RUN_DIR"
+    install -d -m 0755 "$RUN_DIR"
 }
 
 read_state() {
@@ -345,7 +363,7 @@ monitor_hotspot() {
                 log "INFO" "create_ap stopped on request."
             else
                 log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
-                notify "Hotspot stopped: create_ap process exited"
+                set_state "ERROR" "Hotspot stopped: create_ap process exited"
             fi
             break
         fi
@@ -364,11 +382,11 @@ monitor_hotspot() {
                 log "WARN" "Upstream channel changed ($last_channel -> $current_ch). Re-evaluating AP..."
                 if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
                     log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
-                    notify "Hotspot stopped: channel $current_ch unsupported"
+                    set_state "CHANNEL_UNSUPPORTED" "Hotspot stopped: channel $current_ch unsupported"
                     break
                 fi
 
-                notify "Hotspot restarting: channel changed to $current_ch"
+                set_state "CHANNEL_DRIFT" "Hotspot restarting: channel changed to $current_ch"
                 stop_create_ap
                 CHANNEL="$current_ch"
                 last_channel="$current_ch"
@@ -376,11 +394,11 @@ monitor_hotspot() {
                 launch_create_ap "$CHANNEL"
                 if ! wait_for_ap; then
                     log "ERR" "Failed to bring up AP on channel $CHANNEL within ${AP_START_TIMEOUT}s."
-                    notify "Hotspot stopped: AP re-init failed"
+                    set_state "ERROR" "Hotspot stopped: AP re-init failed"
                     break
                 fi
                 log "INFO" "create_ap successfully restarted on channel $CHANNEL (pid $CREATE_AP_PID)."
-                notify "Hotspot is live on channel $CHANNEL!"
+                set_state "LIVE" "Hotspot is live on channel $CHANNEL!"
             fi
         else
             # "Not connected", or iw itself failed (driver reset, card removed)
@@ -392,7 +410,7 @@ monitor_hotspot() {
                 sleep 2
                 if ! iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
                     log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
-                    notify "Hotspot stopped: upstream Wi-Fi disconnected"
+                    set_state "DISCONNECTED" "Hotspot stopped: upstream Wi-Fi disconnected"
                     break
                 fi
                 down_since=""
@@ -427,7 +445,7 @@ start_hotspot() {
     if pgrep -f "create_ap.*$escaped_if" >/dev/null; then
         log "WARN" "create_ap is already running on $INTERFACE (started outside Fiero?). Not touching it."
         log "WARN" "Stop it first, e.g.: sudo create_ap --stop $INTERFACE"
-        notify "Hotspot not started: another hotspot is already running on $INTERFACE"
+        set_state "ERROR" "Hotspot not started: another hotspot is already running on $INTERFACE"
         exit 0
     fi
 
@@ -445,17 +463,17 @@ start_hotspot() {
 
     if ! detect_channel; then
         log "ERR" "Could not detect WiFi channel on $INTERFACE. Aborting."
-        notify "Hotspot could not start: no upstream Wi-Fi detected"
+        set_state "DISCONNECTED" "Hotspot could not start: no upstream Wi-Fi detected"
         exit 0
     fi
 
     if [[ ",$SUPPORTED_CHANNELS," != *",$CHANNEL,"* ]]; then
         log "ERR" "Channel $CHANNEL is not supported for AP broadcast on this hardware. Aborting."
-        notify "Hotspot could not start: Channel $CHANNEL is unsupported"
+        set_state "CHANNEL_UNSUPPORTED" "Hotspot could not start: Channel $CHANNEL is unsupported"
         exit 0
     fi
 
-    notify "Starting hotspot on channel $CHANNEL..."
+    set_state "STARTING" "Starting hotspot on channel $CHANNEL..."
 
     log "INFO" "Launching create_ap in background..."
     launch_create_ap "$CHANNEL"
@@ -466,12 +484,12 @@ start_hotspot() {
         else
             log "ERR" "create_ap exited during startup."
         fi
-        notify "Hotspot could not start (see: journalctl -u fiero-hotspot)"
+        set_state "ERROR" "Hotspot could not start (see: journalctl -u fiero-hotspot)"
         exit 1
     fi
 
     log "INFO" "create_ap is live (pid $CREATE_AP_PID, AP interface $(read_state "$IFACE_FILE"))."
-    notify "Hotspot is live! SSID: $SSID"
+    set_state "LIVE" "Hotspot is live! SSID: $SSID"
 
     monitor_hotspot
     exit 0
@@ -498,9 +516,9 @@ stop_hotspot() {
     stop_create_ap
 
     if ac_online; then
-        notify "Hotspot stopped manually"
+        set_state "STOPPED" "Hotspot stopped manually"
     else
-        notify "Hotspot stopped (charger unplugged)"
+        set_state "STOPPED" "Hotspot stopped (charger unplugged)"
     fi
 }
 
