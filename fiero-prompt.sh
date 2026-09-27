@@ -19,6 +19,50 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
+# --- Event watcher mode: `fiero-prompt watch` ---
+# Unprivileged daemon that tails /run/fiero-hotspot/events (tail -F rides the
+# kernel inotify: zero CPU wakeups while idle) and raises desktop
+# notifications. The root daemon never touches D-Bus; it only appends
+# STATE|MSG|CHANNEL|TS records.
+watch_events() {
+    local watch_lock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fiero-prompt.watch.lock"
+    local event_file="/run/fiero-hotspot/events"
+    local state msg urgency
+
+    exec 8>"$watch_lock"
+    flock -n 8 || exit 0
+
+    # The daemon's RuntimeDirectory owns this path; create only best-effort
+    # (foreground runs, fresh installs) - tail -F picks the file up whenever
+    # it appears.
+    mkdir -p "$(dirname "$event_file")" 2>/dev/null || true
+    touch "$event_file" 2>/dev/null || true
+
+    # ponytail: if the D-Bus socket vanishes mid-run, only the reader exits;
+    # tail lingers until the next event's SIGPIPE closes it.
+    tail -n0 -F "$event_file" 2>/dev/null | while IFS='|' read -r state msg _; do
+        [ -n "$state" ] || continue
+        if [ ! -S "${USER_BUS:-}" ]; then
+            exit 0
+        fi
+        urgency="normal"
+        case "$state" in
+        CHANNEL_UNSUPPORTED | DISCONNECTED | ERROR) urgency="critical" ;;
+        STARTING | CHANNEL_DRIFT) urgency="low" ;;
+        esac
+        /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" \
+            --icon=network-wireless \
+            --urgency="$urgency" 2>/dev/null || true
+    done
+}
+
+if [ "${1:-}" = "watch" ]; then
+    USER_BUS="/run/user/$(id -u)/bus"
+    [ -S "$USER_BUS" ] || exit 0
+    watch_events
+    exit 0
+fi
+
 # Serialises the debounce/supersede step below. Held only for that step, not
 # while the notification is on screen, so a charger flip during an open
 # prompt can still reach the code that cancels the stale prompt.
@@ -32,10 +76,6 @@ if [ -r "$CONFIG_FILE" ]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
     fi
-fi
-
-if [ "${AUTO_PROMPT:-true}" != "true" ]; then
-    exit 0
 fi
 
 INTERFACE="${INTERFACE:-$(iw dev 2>/dev/null | awk '$1=="Interface" && $2 !~ /^ap[0-9]+/ {print $2; exit}')}"
@@ -81,6 +121,16 @@ if [ ! -S "$USER_BUS" ]; then
 fi
 DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_BUS"
 export DBUS_SESSION_BUS_ADDRESS
+
+# One detached watcher per user session: it survives this process and keeps
+# translating daemon state events into desktop notifications (flock-guarded,
+# so only the first spawn wins). Fds 8/9 are closed so it never inherits a
+# held lock.
+setsid --fork bash "$0" watch >/dev/null 2>&1 <&- 3>&- 8>&- 9>&- &
+
+if [ "${AUTO_PROMPT:-true}" != "true" ]; then
+    exit 0
+fi
 STATE_FILE="/run/user/$(id -u)/fiero-prompt.state"
 COOLDOWN=11
 

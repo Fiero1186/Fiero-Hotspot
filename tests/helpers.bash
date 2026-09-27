@@ -44,6 +44,7 @@ install_mocks() {
 # bats itself: bats-exec-test's command line contains the test's name.
 kill_doubles() {
     pkill -f '^(/bin/bash /usr/local/bin/create_ap|create_ap |hostapd /tmp/)' 2>/dev/null || true
+    pkill -f 'fiero-prompt watch' 2>/dev/null || true
 }
 
 reset_state() {
