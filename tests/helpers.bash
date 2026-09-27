@@ -22,6 +22,11 @@ require_container() {
         echo "Refusing to run: these tests modify the system. Use tests/run.sh." >&2
         return 1
     fi
+    # tests/run.sh mounts one scratch volume at both paths (fake charger).
+    if [ ! -d /fake-power ] || ! mountpoint -q /sys/class/power_supply; then
+        echo "Fake charger volume missing: start the tests with tests/run.sh." >&2
+        return 1
+    fi
 }
 
 install_mocks() {

@@ -11,8 +11,10 @@ setup_file() {
     require_container
     install_mocks
     id tester >/dev/null 2>&1 || useradd -m tester
-    mkdir -p /sys/class/power_supply/AC /etc/udev/rules.d /etc/systemd/system
-    echo Mains >/sys/class/power_supply/AC/type
+    # Written via /fake-power, read by install.sh at /sys/class/power_supply
+    # (see tests/run.sh).
+    mkdir -p /fake-power/AC /etc/udev/rules.d /etc/systemd/system
+    echo Mains >/fake-power/AC/type
     rm -rf "$WORK"
     cp -r "$REPO" "$WORK"
 }

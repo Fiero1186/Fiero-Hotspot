@@ -24,8 +24,16 @@ docker build --quiet --tag "$IMAGE" tests >/dev/null
 tty_flag=()
 [ -t 1 ] && tty_flag=(--tty)
 
-# /sys/class/power_supply is replaced by a tmpfs so the tests can fake a charger.
+# Fake charger: one scratch volume is mounted twice. The scripts read it at
+# /sys/class/power_supply; the tests write it at /fake-power. Docker's default
+# AppArmor profile (Linux hosts, e.g. CI) denies every write under /sys, even
+# to a mount placed there, so tests must never write through the /sys path.
+POWER_VOLUME="fiero-test-power-$$"
+docker volume create "$POWER_VOLUME" >/dev/null
+trap 'docker volume rm -f "$POWER_VOLUME" >/dev/null 2>&1 || true' EXIT
+
 docker run --rm "${tty_flag[@]}" \
-    --tmpfs /sys/class/power_supply \
+    --volume "$POWER_VOLUME:/sys/class/power_supply" \
+    --volume "$POWER_VOLUME:/fake-power" \
     --volume "$src:/src:ro" \
     "$IMAGE" bash /src/tests/in-container.sh "$@"

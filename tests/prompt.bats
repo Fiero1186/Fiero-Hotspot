@@ -5,7 +5,9 @@
 load helpers
 
 PROMPT=/usr/local/bin/fiero-prompt
-AC=/sys/class/power_supply/AC
+# The scripts read /sys/class/power_supply/AC; tests write the same files via
+# /fake-power (see tests/run.sh), because writes under /sys are denied.
+AC=/fake-power/AC
 
 setup_file() {
     require_container
