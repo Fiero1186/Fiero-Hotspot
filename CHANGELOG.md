@@ -7,6 +7,28 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Fixed
+- **The hotspot could not start at all in v2.0.0.** `CAP_SETUID` and `CAP_SETGID` were
+  dropped from `CapabilityBoundingSet`, but `dnsmasq` drops to the `nobody` group/user.
+  It aborted with `failed to change group-id to nobody: Operation not permitted`,
+  `create_ap` never brought the AP up, and the unit exited 1 after `AP_START_TIMEOUT`.
+  Both capabilities are restored, scoped strictly to `dnsmasq`; nothing in Fiero uses
+  them. Everything else in the v2.0.0 bounding set stays dropped.
+- `test_harness.sh` now starts `fiero-prompt watch` alongside the D-Bus monitor.
+  Since v2.0.0 the daemon never touches D-Bus, so a bare `dbus-monitor` could never
+  observe a `Notify` signal — the harness now exercises the real inotify path.
+
+### Changed
+- The plug-in and unplug timeout fallbacks are now symmetrical and configurable.
+  `AUTO_START_ON_TIMEOUT` and `AUTO_STOP_ON_TIMEOUT` both default to `'true'`, and the
+  installer asks for both (right after `AUTO_PROMPT`) instead of hardcoding the
+  start behaviour to `'false'`. Configs written before this key existed keep the
+  v1.5.0 behaviour (act on timeout) rather than silently going quiet.
+- Only the unplug fallback can be disabled without a prompt: answering `n` to both
+  installer questions writes `'false'` for both keys.
+
+## [2.0.0] - 2026-09-27
+
+### Fixed
 - **The hotspot could not start in v1.5.0.** `PrivateTmp=false` together with
   `ProtectSystem=strict` made `/tmp` read-only, so `create_ap` could not create its
   working directory. `PrivateTmp=true` is back.
@@ -51,6 +73,7 @@ All notable changes to this project are documented here. The format is based on
   (`CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`), dropping `CAP_SETUID`,
   `CAP_SETGID`, `CAP_KILL`, `CAP_DAC_OVERRIDE`, `CAP_SYS_RESOURCE`, `CAP_CHOWN` and
   `CAP_AUDIT_WRITE`.
+  *(The `CAP_SETUID`/`CAP_SETGID` drop broke startup — see `[Unreleased]`.)*
 - Exposure score improves from **4.2 OK** to **3.0 OK**
   (`systemd-analyze security`).
 

@@ -135,6 +135,10 @@ if [ "$KEEP_CONFIG" -eq 1 ]; then
     fi
     AUTO_PROMPT=$(conf_get AUTO_PROMPT)
     AUTO_PROMPT="${AUTO_PROMPT:-true}"
+    AUTO_START_ON_TIMEOUT=$(conf_get AUTO_START_ON_TIMEOUT)
+    AUTO_START_ON_TIMEOUT="${AUTO_START_ON_TIMEOUT:-true}"
+    AUTO_STOP_ON_TIMEOUT=$(conf_get AUTO_STOP_ON_TIMEOUT)
+    AUTO_STOP_ON_TIMEOUT="${AUTO_STOP_ON_TIMEOUT:-true}"
     echo "Keeping existing configuration (target user: $TARGET_USER)."
 fi
 TARGET_UID=$(id -u "$TARGET_USER")
@@ -268,6 +272,26 @@ if [ "$KEEP_CONFIG" -eq 0 ]; then
     esac
 
     # ---------------------------------------------------------
+    # 5c. TIMEOUT FALLBACKS
+    # ---------------------------------------------------------
+    # Only asked when a prompt can actually appear.
+    if [ "$AUTO_PROMPT" = "true" ]; then
+        read -rp "Start the hotspot if the plugged-in prompt is not answered? [Y/n]: " AUTO_START_INPUT
+        case "${AUTO_START_INPUT:-Y}" in
+            [nN] | [nN][oO]) AUTO_START_ON_TIMEOUT="false" ;;
+            *) AUTO_START_ON_TIMEOUT="true" ;;
+        esac
+        read -rp "Stop the hotspot if the unplugged prompt is not answered? [Y/n]: " AUTO_STOP_INPUT
+        case "${AUTO_STOP_INPUT:-Y}" in
+            [nN] | [nN][oO]) AUTO_STOP_ON_TIMEOUT="false" ;;
+            *) AUTO_STOP_ON_TIMEOUT="true" ;;
+        esac
+    else
+        AUTO_START_ON_TIMEOUT="true"
+        AUTO_STOP_ON_TIMEOUT="true"
+    fi
+
+    # ---------------------------------------------------------
     # 6. CONFIGURATION
     # ---------------------------------------------------------
     # Single-quote a value so the config can be sourced safely even if it
@@ -287,7 +311,8 @@ SUPPORTED_CHANNELS=$(shquote "$SUPPORTED_CHANNELS")
 TARGET_USER=$(shquote "$TARGET_USER")
 TARGET_UID=$(shquote "$TARGET_UID")
 AUTO_PROMPT=$(shquote "$AUTO_PROMPT")
-AUTO_START_ON_TIMEOUT='false'
+AUTO_START_ON_TIMEOUT=$(shquote "$AUTO_START_ON_TIMEOUT")
+AUTO_STOP_ON_TIMEOUT=$(shquote "$AUTO_STOP_ON_TIMEOUT")
 EOF
 
     chown root:"$TARGET_USER" "$CONFIG_TMP"
@@ -333,8 +358,10 @@ echo
 echo "Installation complete."
 if [ "$AUTO_PROMPT" = "true" ]; then
     echo "When the charger is connected/disconnected, a desktop prompt will ask"
-    echo "whether to start/stop the hotspot. If you don't answer, nothing is started"
-    echo "(set AUTO_START_ON_TIMEOUT='true' in $CONFIG_PATH to change that)."
+    echo "whether to start/stop the hotspot. Unanswered prompts fall back to:"
+    echo "  start on plug-in timeout : $AUTO_START_ON_TIMEOUT"
+    echo "  stop on unplug timeout   : $AUTO_STOP_ON_TIMEOUT"
+    echo "(edit both in $CONFIG_PATH)"
     TEST_CMD="sudo systemctl start fiero-hotspot.service"
 else
     echo "Manual mode: use 'sudo fiero-hotspot start' to start and 'sudo fiero-hotspot stop' to stop."

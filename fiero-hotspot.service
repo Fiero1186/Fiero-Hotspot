@@ -56,10 +56,16 @@ SystemCallFilter=~@clock @debug @module @mount @obsolete @cpu-emulation @raw-io 
 # See README.md "Systemd Hardening Rationale" for architectural justification.
 
 # Capabilities required for NAT routing (iptables, hostapd) and dnsmasq
-# (bind :53/:67, run as nobody). Desktop notifications are emitted by the
-# unprivileged watcher in fiero-prompt.sh reading /run/fiero-hotspot/events,
-# so no user-switching, kill or audit capabilities are needed here.
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+# (bind :53/:67). Desktop notifications are emitted by the unprivileged
+# watcher in fiero-prompt.sh reading /run/fiero-hotspot/events, so no kill
+# or audit capabilities are needed here.
+#
+# CAP_SETGID/CAP_SETUID are retained solely because dnsmasq drops to the
+# 'nobody' group/user. Without them dnsmasq aborts at startup with
+# "failed to change group-id to nobody: Operation not permitted" and
+# create_ap tears the AP down. Nothing in fiero-hotspot itself uses them.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

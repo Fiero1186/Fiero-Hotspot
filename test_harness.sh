@@ -68,6 +68,7 @@ echo "======================================================================"
 # 2. D-Bus Monitor Subsystem & Cleanup Trap
 # ------------------------------------------------------------------------------
 DBUS_MONITOR_PID=""
+PROMPT_WATCH_PID=""
 EDGE_TMP_DIRS=()
 CONFIG_BACKUP=""
 
@@ -86,6 +87,12 @@ cleanup() {
 		kill -TERM "$DBUS_MONITOR_PID" 2>/dev/null || true
 		wait "$DBUS_MONITOR_PID" 2>/dev/null || true
 	fi
+	if [[ -n "${PROMPT_WATCH_PID:-}" ]]; then
+		echo "[INFO] Terminating background fiero-prompt watch (PID: $PROMPT_WATCH_PID)..."
+		pkill -P "$PROMPT_WATCH_PID" 2>/dev/null || true
+		kill -TERM "$PROMPT_WATCH_PID" 2>/dev/null || true
+		wait "$PROMPT_WATCH_PID" 2>/dev/null || true
+	fi
 	if [[ ${#EDGE_TMP_DIRS[@]} -gt 0 ]]; then
 		echo "[INFO] Cleaning up edge case test temp directories..."
 		rm -rf "${EDGE_TMP_DIRS[@]}" 2>/dev/null || true
@@ -97,6 +104,14 @@ trap cleanup EXIT INT TERM
 echo "[INFO] Launching D-Bus notification monitor..."
 su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/$TARGET_UID; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$TARGET_UID/bus; exec dbus-monitor \"interface='org.freedesktop.Notifications'\"" >"$LOG_DIR/03-notifications-dbus.raw" 2>&1 &
 DBUS_MONITOR_PID=$!
+
+# The root daemon writes /run/fiero-hotspot/events and never touches D-Bus
+# (v2.0.0). The unprivileged watcher tails that file and issues the
+# notify-send calls, so it must be running for dbus-monitor to see a
+# Notify signal. It self-exits if another watcher already holds the flock.
+echo "[INFO] Launching fiero-prompt watch event consumer..."
+su - "$TARGET_USER" -c "export XDG_RUNTIME_DIR=/run/user/$TARGET_UID; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$TARGET_UID/bus; exec /usr/local/bin/fiero-prompt watch" >/dev/null 2>&1 &
+PROMPT_WATCH_PID=$!
 sleep 0.5
 
 # ------------------------------------------------------------------------------

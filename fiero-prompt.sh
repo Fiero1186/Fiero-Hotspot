@@ -236,14 +236,13 @@ if [ "$current_state" = "online" ]; then
         --action="start=Start" \
         --action="ignore=Ignore")
     still_current || exit 0
-    # Explicit ignore -> exit. Timeout or dismissed -> start only if the user
-    # opted in (AUTO_START_ON_TIMEOUT='true') and we are still on AC.
-    # Broadcasting a network should need a clear "yes".
+    # Explicit ignore -> exit. Timeout or dismissed -> start unless the user
+    # opted out (AUTO_START_ON_TIMEOUT='false') and we are still on AC.
     if [ "$result" = "ignore" ]; then
         exit 0
     fi
     if [ -z "$result" ]; then
-        if [ "${AUTO_START_ON_TIMEOUT:-false}" != "true" ] || ! ac_online; then
+        if [ "${AUTO_START_ON_TIMEOUT:-true}" != "true" ] || ! ac_online; then
             exit 0
         fi
     fi
@@ -255,13 +254,16 @@ else
         --action="stop=Stop" \
         --action="keep=Keep Running")
     still_current || exit 0
-    # Explicit keep -> exit. Timeout -> stop (the safe choice on battery),
-    # but only if still unplugged.
+    # Explicit keep -> exit. Timeout -> stop (the safe choice on battery)
+    # unless the user opted out (AUTO_STOP_ON_TIMEOUT='false') or the charger
+    # came back while the prompt was open.
     if [ "$result" = "keep" ]; then
         exit 0
     fi
-    if [ -z "$result" ] && ac_online; then
-        exit 0
+    if [ -z "$result" ]; then
+        if [ "${AUTO_STOP_ON_TIMEOUT:-true}" != "true" ] || ac_online; then
+            exit 0
+        fi
     fi
     sudo -n /usr/bin/systemctl stop fiero-hotspot.service
 fi
