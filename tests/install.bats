@@ -5,7 +5,7 @@
 load helpers
 
 WORK=/tmp/fiero-src
-ANSWERS='My Hotspot\ngoodpass123\ngoodpass123\n\n'
+ANSWERS='My Hotspot\ngoodpass123\ngoodpass123\n\n\n\n'
 
 setup_file() {
     require_container
@@ -33,10 +33,20 @@ install_as_tester() {
     run install_as_tester "$ANSWERS"
     [ "$status" -eq 0 ]
     [ "$(stat -c '%a %U %G' /etc/fiero-hotspot.conf)" = "640 root tester" ]
-    grep -qx "AUTO_START_ON_TIMEOUT='false'" /etc/fiero-hotspot.conf
+    grep -qx "AUTO_START_ON_TIMEOUT='true'" /etc/fiero-hotspot.conf
+    grep -qx "AUTO_STOP_ON_TIMEOUT='true'" /etc/fiero-hotspot.conf
     visudo -cf /etc/sudoers.d/fiero-hotspot
     [ ! -e /etc/sudoers.d/.fiero-hotspot.tmp ]
     [ -x /usr/local/bin/fiero-hotspot ]
+}
+
+@test "answering no to both timeout questions disables both fallbacks" {
+    run install_as_tester 'My Hotspot\ngoodpass123\ngoodpass123\n\nn\nn\n'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"start on plug-in timeout : false"* ]]
+    [[ "$output" == *"stop on unplug timeout   : false"* ]]
+    grep -qx "AUTO_START_ON_TIMEOUT='false'" /etc/fiero-hotspot.conf
+    grep -qx "AUTO_STOP_ON_TIMEOUT='false'" /etc/fiero-hotspot.conf
 }
 
 @test "installer refuses to run from a root shell" {
@@ -71,7 +81,7 @@ install_as_tester() {
 }
 
 @test "passwords create_ap's config parser would change are rejected" {
-    run install_as_tester 'My Hotspot\nbad\\\\pass123\nbad\\\\pass123\ngoodpass123\ngoodpass123\n\n'
+    run install_as_tester 'My Hotspot\nbad\\\\pass123\nbad\\\\pass123\ngoodpass123\ngoodpass123\n\n\n\n'
     [ "$status" -eq 0 ]
     [[ "$output" == *"must not contain a backslash"* ]]
     grep -qx "PASSWORD='goodpass123'" /etc/fiero-hotspot.conf

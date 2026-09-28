@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v1.5.0-blue)
+![Version](https://img.shields.io/badge/version-v2.0.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 [![CI](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml/badge.svg)](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml)
 
@@ -84,7 +84,7 @@ The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses
 ```
 udev event (AC online/offline)
   └─> 99-fiero-hotspot.rules
-        └─> systemd-run --no-block -- su - <user> -c /usr/local/bin/fiero-prompt
+        └─> systemd-run --no-block --collect -- su - <user> -c /usr/local/bin/fiero-prompt
               ├─> setsid --fork fiero-prompt watch   (detached event watcher, one per session)
               └─> sudo -n systemctl start/stop fiero-hotspot.service
                     └─> /usr/local/bin/fiero-hotspot {start|stop}
@@ -114,7 +114,7 @@ Hotspots started by other tools (for example the linux-wifi-hotspot GUI) are lef
 
 The root daemon never touches the desktop. Every state transition is written by `set_state` as an atomic snapshot to `/run/fiero-hotspot/state` (`STATE`/`MSG`/`CHANNEL`/`TIMESTAMP` assignments) and appended as a pipe-delimited record (`STATE|MSG|CHANNEL|TS`) to `/run/fiero-hotspot/events` (both mode `0644`). The unprivileged `fiero-prompt watch` daemon tails the event file with `tail -n0 -F` (kernel inotify; zero CPU wakeups while idle) and raises `notify-send` notifications, with urgency mapped from the state (`ERROR`/`DISCONNECTED`/`CHANNEL_UNSUPPORTED` → critical, `STARTING`/`CHANNEL_DRIFT` → low). Interactive prompts (Start/Ignore/Keep Running) remain D-Bus-based: `fiero-prompt.sh` sets `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` and invokes `notify-send`. A timestamp-based cooldown file (`/run/user/<uid>/fiero-prompt.state`) debounces rapid udev event clusters (11-second window). A `flock` on `/run/user/<uid>/fiero-prompt.lock` serialises that debounce step (it is not held while the notification is on screen). If the charger state flips while a prompt is still open, the stale prompt is cancelled.
 
-If nobody answers the "Start?" prompt, **nothing is started** unless `AUTO_START_ON_TIMEOUT='true'` is set in the config: starting a Wi-Fi network should need a clear "yes". If nobody answers the "Stop?" prompt after unplugging, the hotspot is stopped (the safe choice on battery).
+Both timeouts are configurable and asked at install time. If nobody answers the "Start?" prompt, the hotspot is started (`AUTO_START_ON_TIMEOUT='true'`, the default); set it to `'false'` in the config to require a clear "yes" instead. If nobody answers the "Stop?" prompt after unplugging, the hotspot is stopped (`AUTO_STOP_ON_TIMEOUT='true'`, the default — the safe choice on battery); set it to `'false'` to leave it running. In both cases the power state is re-checked immediately before acting, so a charger flip during the prompt wins over the fallback.
 
 ## Installation & Removal
 
@@ -151,7 +151,8 @@ File: `/etc/fiero-hotspot.conf`
 | `TARGET_USER` | User for notification routing |
 | `TARGET_UID` | UID of `TARGET_USER` |
 | `AUTO_PROMPT` | `true` for automatic D-Bus prompt on AC events, `false` for CLI-only control |
-| `AUTO_START_ON_TIMEOUT` | `true` to start the hotspot when the "Start?" prompt is not answered; default `false` |
+| `AUTO_START_ON_TIMEOUT` | `true` to start the hotspot when the "Start?" prompt is not answered; default `true` |
+| `AUTO_STOP_ON_TIMEOUT` | `true` to stop the hotspot when the "Stop?" prompt is not answered; default `true` |
 
 ### Enable & Start
 
@@ -245,7 +246,7 @@ The harness executes over 100 edge-case checks across all phases. Phase 9 tests 
 | **5e** | 2 | RF channel parsing: full frequency listing, disabled/no-IR/radar exclusion |
 | **6a** | 3 | `ac_online()` mock: Mains online=1, online=0, no Mains supply |
 | **6b** | 5 | Cooldown debounce: no state file, same-state window, window expiry, state-flip process kill, malformed file |
-| **6c** | 8 | Frequency-to-channel conversion: 2.4 GHz (ch 1-11), channel 14 (2484 MHz), 5 GHz (ch 36-48, 149) |
+| **6c** | 13 | Frequency-to-channel conversion: 2.4 GHz (ch 1-11), channel 14 (2484 MHz), 5 GHz (ch 36-48, 149), DFS bands (ch 140/142/144 at 5700/5710/5720 MHz), and dual-layout channel parsing (current and legacy `iw` output) |
 | **6d** | 2 | Channel whitelist validation against `SUPPORTED_CHANNELS` |
 | **6e** | 1 | Automatic prompt setting: `AUTO_PROMPT=false` early exit validation |
 | **7a** | 2 | Instance lock (`flock`): second invocation rejected, exit 0 with log message |
@@ -383,7 +384,7 @@ The implementation was vibe-coded using LLMs via OpenCode, under strict systems 
 - **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
-- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`), now with `NoNewPrivileges=true`, `RestrictRealtime=true` and a capability set of `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE` active — exposure score 3.0 OK. Desktop notifications flow through `/run/fiero-hotspot/events` instead of a root→user D-Bus hop.
+- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`), now with `NoNewPrivileges=true`, `RestrictRealtime=true` and a capability set of `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID` active (the last two exist only so `dnsmasq` can drop to `nobody`) — exposure score 3.0 OK. Desktop notifications flow through `/run/fiero-hotspot/events` instead of a root→user D-Bus hop.
 - **Live USB Boot testing:** Tested in a live boot environment (Arch-Based Garuda Linux iso)
 
 AI handled the rapid boilerplate; strict verification and ShellCheck rules kept the codebase production-grade. But the idea was fully mine.

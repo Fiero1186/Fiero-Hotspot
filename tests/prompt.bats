@@ -29,11 +29,19 @@ setup() {
 
 plug() { echo "$1" >"$AC/online"; }
 
-@test "plugged in and nobody answers: nothing is started by default" {
+@test "plugged in and nobody answers: hotspot is started by default" {
     plug 1
     "$PROMPT"
     grep -q "Start Fiero Hotspot" "$M/notify"
-    [ ! -f "$M/sudo" ]
+    grep -q "systemctl start fiero-hotspot.service" "$M/sudo"
+}
+
+@test "a config without the timeout keys still starts on timeout" {
+    plug 1
+    refute grep -q AUTO_START_ON_TIMEOUT /etc/fiero-hotspot.conf
+    refute grep -q AUTO_STOP_ON_TIMEOUT /etc/fiero-hotspot.conf
+    "$PROMPT"
+    grep -q "systemctl start fiero-hotspot.service" "$M/sudo"
 }
 
 @test "plugged in and user clicks Start: hotspot is started" {
@@ -43,11 +51,12 @@ plug() { echo "$1" >"$AC/online"; }
     grep -q "systemctl start fiero-hotspot.service" "$M/sudo"
 }
 
-@test "AUTO_START_ON_TIMEOUT=true restores start-on-timeout" {
-    write_config "AUTO_START_ON_TIMEOUT='true'"
+@test "AUTO_START_ON_TIMEOUT=false does nothing when the Start prompt times out" {
+    write_config "AUTO_START_ON_TIMEOUT='false'"
     plug 1
     "$PROMPT"
-    grep -q "systemctl start fiero-hotspot.service" "$M/sudo"
+    grep -q "Start Fiero Hotspot" "$M/notify"
+    [ ! -f "$M/sudo" ]
 }
 
 @test "unplugging while the Start prompt is open cancels it" {
@@ -79,6 +88,24 @@ plug() { echo "$1" >"$AC/online"; }
     plug 0
     "$PROMPT"
     grep -q "systemctl stop fiero-hotspot.service" "$M/sudo"
+}
+
+@test "AUTO_STOP_ON_TIMEOUT=false keeps the hotspot running on timeout" {
+    write_config "AUTO_STOP_ON_TIMEOUT='false'"
+    touch "$M/svc-active"
+    plug 0
+    "$PROMPT"
+    grep -q "AC disconnected" "$M/notify"
+    [ ! -f "$M/sudo" ]
+}
+
+@test "clicking Keep Running wins over AUTO_STOP_ON_TIMEOUT=true" {
+    write_config "AUTO_STOP_ON_TIMEOUT='true'"
+    touch "$M/svc-active"
+    plug 0
+    echo keep >"$M/notify-answer"
+    "$PROMPT"
+    [ ! -f "$M/sudo" ]
 }
 
 @test "AUTO_PROMPT=false never prompts" {
