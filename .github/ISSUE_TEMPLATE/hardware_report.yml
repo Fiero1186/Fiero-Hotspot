@@ -1,5 +1,5 @@
 name: Hardware report
-description: Tell us whether Fiero works on your laptop / Wi-Fi card
+description: Tell us whether Fiero-Hotspot works on your laptop / Wi-Fi card
 labels: [hardware]
 body:
   - type: markdown

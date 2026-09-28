@@ -17,9 +17,9 @@ body:
   - type: input
     id: version
     attributes:
-      label: Fiero version
+      label: Fiero-Hotspot version
       description: Output of `fiero-hotspot version`
-      placeholder: fiero-hotspot v2.1.0
+      placeholder: fiero-hotspot v2.1.2
     validations:
       required: true
   - type: input

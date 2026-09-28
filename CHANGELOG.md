@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-09-28
+
+### Changed
+- Documentation and template naming pass: prose references to the project now use
+  `Fiero-Hotspot` consistently across `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`,
+  `SECURITY.md` and the issue templates. The author copyright line, GitHub URLs and
+  all command/path/flag strings are unchanged.
+
 ## [2.1.1] - 2026-09-28
 
 ### Fixed
@@ -20,8 +28,8 @@ All notable changes to this project are documented here. The format is based on
   dropped from `CapabilityBoundingSet`, but `dnsmasq` drops to the `nobody` group/user.
   It aborted with `failed to change group-id to nobody: Operation not permitted`,
   `create_ap` never brought the AP up, and the unit exited 1 after `AP_START_TIMEOUT`.
-  Both capabilities are restored, scoped strictly to `dnsmasq`; nothing in Fiero uses
-  them. Everything else in the v2.0.0 bounding set stays dropped.
+  Both capabilities are restored, scoped strictly to `dnsmasq`; nothing in Fiero-Hotspot
+  uses them. Everything else in the v2.0.0 bounding set stays dropped.
 - `test_harness.sh` now starts `fiero-prompt watch` alongside the D-Bus monitor.
   Since v2.0.0 the daemon never touches D-Bus, so a bare `dbus-monitor` could never
   observe a `Notify` signal — the harness now exercises the real inotify path.
@@ -29,7 +37,7 @@ All notable changes to this project are documented here. The format is based on
 ### Security
 - Exposure score rises from **3.0 OK** to **3.4 OK**, caused solely by restoring
   `CAP_SETGID`/`CAP_SETUID` to the capability bounding set. They are required for
-  `dnsmasq`'s drop to `nobody` and are used by nothing in Fiero itself. The score
+  `dnsmasq`'s drop to `nobody` and are used by nothing in Fiero-Hotspot itself. The score
   stays well inside the 5.0 ceiling enforced by `tests/in-container.sh`.
 
 ### Changed
@@ -54,10 +62,10 @@ All notable changes to this project are documented here. The format is based on
   restored.)*
 - `create_ap` can write NetworkManager's `unmanaged-devices` setting again
   (`ReadWritePaths=-/etc/NetworkManager`).
-- Stopping the hotspot waits for `create_ap` to finish its own cleanup. Before, Fiero
-  deleted `create_ap`'s temp files right away, which could leave `ip_forward` enabled
-  after the hotspot was off.
-- Fiero only manages its own `create_ap`. It no longer deletes other tools' `ap*`
+- Stopping the hotspot waits for `create_ap` to finish its own cleanup. Before,
+  Fiero-Hotspot deleted `create_ap`'s temp files right away, which could leave
+  `ip_forward` enabled after the hotspot was off.
+- Fiero-Hotspot only manages its own `create_ap`. It no longer deletes other tools' `ap*`
   interfaces or `/tmp/create_ap*` directories, and refuses to start when another
   `create_ap` already runs on the interface.
 - A hotspot that `create_ap` started with `--no-virt` (no `ap*` interface) is no longer

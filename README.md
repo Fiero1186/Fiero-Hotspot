@@ -1,12 +1,12 @@
-# Fiero Hotspot
+# Fiero-Hotspot
 
-![Version](https://img.shields.io/badge/version-v2.1.1-blue)
+![Version](https://img.shields.io/badge/version-v2.1.2-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 [![CI](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml/badge.svg)](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml)
 
 ## Overview
 
-Fiero Hotspot is an automated bash Wi-Fi repeater daemon for Linux. It shares an upstream Wi-Fi connection via NAT into a local AP using `create_ap`, orchestrated by udev power-supply events and systemd unit isolation. Concurrency is enforced via `flock` to prevent duplicate instances, and SIGTERM/EXIT traps guarantee clean child-process teardown of `hostapd` and `dnsmasq`.
+Fiero-Hotspot is an automated bash Wi-Fi repeater daemon for Linux. It shares an upstream Wi-Fi connection via NAT into a local AP using `create_ap`, orchestrated by udev power-supply events and systemd unit isolation. Concurrency is enforced via `flock` to prevent duplicate instances, and SIGTERM/EXIT traps guarantee clean child-process teardown of `hostapd` and `dnsmasq`.
 
 ## Quick Start
 
@@ -99,13 +99,13 @@ The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mai
 
 ### Signal Handling
 
-Fiero only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0755`, created by systemd's `RuntimeDirectory=`; world-readable so the unprivileged event watcher can read the IPC files): the `create_ap` PID, the `create_ap` config directory, the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`), the atomic state snapshot (`state`), and the append-only event stream (`events`). The temporary `create_ap.conf` holding the WPA passphrase stays protected by its own mode `0600` — the readable directory is not a secret leak.
+Fiero-Hotspot only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0755`, created by systemd's `RuntimeDirectory=`; world-readable so the unprivileged event watcher can read the IPC files): the `create_ap` PID, the `create_ap` config directory, the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`), the atomic state snapshot (`state`), and the append-only event stream (`events`). The temporary `create_ap.conf` holding the WPA passphrase stays protected by its own mode `0600` — the readable directory is not a secret leak.
 
 `fiero-hotspot.sh start` traps `EXIT`, `INT`, and `TERM`. Stopping (by the trap, by `fiero-hotspot stop`, or on a channel change):
 
-1. Sends `USR1` to Fiero's own `create_ap` (its clean-exit signal, same as `create_ap --stop`) and **waits up to 15 seconds** for it to exit. `create_ap`'s own cleanup restores `ip_forward`, removes its `iptables` rules and undoes its NetworkManager changes, so it must be allowed to finish first.
+1. Sends `USR1` to Fiero-Hotspot's own `create_ap` (its clean-exit signal, same as `create_ap --stop`) and **waits up to 15 seconds** for it to exit. `create_ap`'s own cleanup restores `ip_forward`, removes its `iptables` rules and undoes its NetworkManager changes, so it must be allowed to finish first.
 2. Only if `create_ap` hangs: kills it, stops the `hostapd`/`dnsmasq` belonging to *that* instance (matched by its config directory), and restores the saved `ip_forward` value if no other `create_ap` is running.
-3. Removes a leftover virtual `apN` interface of Fiero's own instance. The physical card and other tools' interfaces are never touched.
+3. Removes a leftover virtual `apN` interface of Fiero-Hotspot's own instance. The physical card and other tools' interfaces are never touched.
 4. Deliberately skips deleting `p2p-dev-<interface>` to prevent iwlwifi firmware crashes.
 
 Hotspots started by other tools (for example the linux-wifi-hotspot GUI) are left alone: if a `create_ap` is already running on the interface, `start` exits with a message instead of killing it. Running `sudo fiero-hotspot stop` by hand while the systemd service is active simply runs `systemctl stop fiero-hotspot.service`.
@@ -204,7 +204,7 @@ fiero-hotspot help                # Print usage menu (also: -h, --help, or no ar
   11:22:33:44:55:66  -62 dBm    192.168.12.11   -
 ```
 
-IP and hostname are resolved from the lease file of Fiero's `create_ap` instance (read through `/proc/<pid>/root`, because the service runs with a private `/tmp`) and `/var/lib/misc/dnsmasq.leases`. Fields default to `-` when unavailable.
+IP and hostname are resolved from the lease file of Fiero-Hotspot's `create_ap` instance (read through `/proc/<pid>/root`, because the service runs with a private `/tmp`) and `/var/lib/misc/dnsmasq.leases`. Fields default to `-` when unavailable.
 
 ### Uninstall
 
@@ -306,7 +306,7 @@ Attach `summary.txt`, `lspci.txt`, and `iw_list.txt` along with your `/etc/fiero
 
 The passphrase is handed to `create_ap` through a root-only (`0600`) config file, `/run/fiero-hotspot/create_ap.conf`, which is deleted as soon as the AP is up, so it does not appear in `ps` or `/proc/<pid>/cmdline`.
 
-`create_ap` reads that file with `read` (without `-r`), which drops backslashes and trims leading/trailing spaces. The installer therefore rejects such SSIDs/passphrases. For an older config that contains one, Fiero falls back to passing it on the command line (visible to local users) and logs a warning; mount `/proc` with `hidepid=2` if that matters on a shared machine.
+`create_ap` reads that file with `read` (without `-r`), which drops backslashes and trims leading/trailing spaces. The installer therefore rejects such SSIDs/passphrases. For an older config that contains one, Fiero-Hotspot falls back to passing it on the command line (visible to local users) and logs a warning; mount `/proc` with `hidepid=2` if that matters on a shared machine.
 
 The passphrase is stored in `/etc/fiero-hotspot.conf`, which the target user can read (mode `640 root:<user>`).
 

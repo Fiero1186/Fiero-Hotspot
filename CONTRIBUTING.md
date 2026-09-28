@@ -1,12 +1,12 @@
-# Contributing to Fiero Hotspot
+# Contributing to Fiero-Hotspot
 
 Thanks for helping! Bug reports, hardware reports and pull requests are all welcome.
 
 ## Reporting a problem
 
-Open an issue with the **Bug report** template. Because Fiero depends so much on the Wi-Fi card, please include the hardware details it asks for (`lspci -k`, `iw list`, the service journal). Remove your passphrase and anything else private from logs first.
+Open an issue with the **Bug report** template. Because Fiero-Hotspot depends so much on the Wi-Fi card, please include the hardware details it asks for (`lspci -k`, `iw list`, the service journal). Remove your passphrase and anything else private from logs first.
 
-Did Fiero work (or not) on your laptop? The **Hardware report** template helps grow the compatibility list.
+Did Fiero-Hotspot work (or not) on your laptop? The **Hardware report** template helps grow the compatibility list.
 
 Security problems: please use [private vulnerability reporting](https://github.com/Fiero1186/Fiero-Hotspot/security/advisories/new) instead of a public issue (see [SECURITY.md](SECURITY.md)).
 
@@ -51,4 +51,4 @@ Exit code `0` means everything passed **including a real start/stop of the hotsp
 
 - Bash, 4-space indentation (tabs in `test_harness.sh`), see [.editorconfig](.editorconfig).
 - Root scripts set a fixed `PATH` and must never trust the caller's environment.
-- Only ever touch Fiero's own `create_ap` instance and files; other hotspots on the system must be left alone.
+- Only ever touch Fiero-Hotspot's own `create_ap` instance and files; other hotspots on the system must be left alone.

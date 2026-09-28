@@ -19,7 +19,7 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-VERSION="2.1.1"
+VERSION="2.1.2"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 LOCK_FILE="/run/fiero-hotspot.lock"
