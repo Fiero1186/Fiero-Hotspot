@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v2.0.0-blue)
+![Version](https://img.shields.io/badge/version-v2.1.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 [![CI](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml/badge.svg)](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml)
 
@@ -346,7 +346,7 @@ Requires a physical wireless adapter exposing an `nl80211` interface capable of 
 
 ## Systemd Hardening Rationale
 
-The systemd service achieves a **3.0 OK** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 4.2 OK in Phase 1, 5.7 MEDIUM in v1.4.1 and 8.2 EXPOSED in v1.2.0. `PrivateTmp=true` is required: with `ProtectSystem=strict` the rest of the filesystem is read-only, and `create_ap` needs a writable `/tmp`. `ReadWritePaths=-/etc/NetworkManager` lets `create_ap` mark its virtual interface as unmanaged. One directive is intentionally omitted because it breaks essential functionality:
+The systemd service achieves a **3.4 OK** exposure rating (`systemd-analyze security fiero-hotspot.service`), down from 4.2 OK in Phase 1, 5.7 MEDIUM in v1.4.1 and 8.2 EXPOSED in v1.2.0. `PrivateTmp=true` is required: with `ProtectSystem=strict` the rest of the filesystem is read-only, and `create_ap` needs a writable `/tmp`. `ReadWritePaths=-/etc/NetworkManager` lets `create_ap` mark its virtual interface as unmanaged. One directive is intentionally omitted because it breaks essential functionality:
 
 ### ProtectKernelTunables=true (omitted)
 
@@ -384,7 +384,7 @@ The implementation was vibe-coded using LLMs via OpenCode, under strict systems 
 - **Zero Blind Trust:** Every component—from root-to-user D-Bus session routing down to udev power triggers—was subjected to a strict bash test harness (`test_harness.sh`).
 - **Zero Process Leakage:** Background workers, `hostapd`, and `dnsmasq` instances are tracked and reaped on `SIGTERM`/`EXIT` to prevent zombie interfaces and memory leaks.
 - **Race-Condition Safety:** Concurrency is locked down via `flock` file descriptors to guarantee idempotent execution even during erratic AC power plug/unplug events.
-- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`), now with `NoNewPrivileges=true`, `RestrictRealtime=true` and a capability set of `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID` active (the last two exist only so `dnsmasq` can drop to `nobody`) — exposure score 3.0 OK. Desktop notifications flow through `/run/fiero-hotspot/events` instead of a root→user D-Bus hop.
+- **Sandboxed Execution:** Hardened systemd unit isolation (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=true`), now with `NoNewPrivileges=true`, `RestrictRealtime=true` and a capability set of `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID` active (the last two exist only so `dnsmasq` can drop to `nobody`) — exposure score 3.4 OK. Desktop notifications flow through `/run/fiero-hotspot/events` instead of a root→user D-Bus hop.
 - **Live USB Boot testing:** Tested in a live boot environment (Arch-Based Garuda Linux iso)
 
 AI handled the rapid boilerplate; strict verification and ShellCheck rules kept the codebase production-grade. But the idea was fully mine.

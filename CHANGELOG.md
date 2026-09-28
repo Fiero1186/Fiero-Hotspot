@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-28
+
 ### Fixed
 - **The hotspot could not start at all in v2.0.0.** `CAP_SETUID` and `CAP_SETGID` were
   dropped from `CapabilityBoundingSet`, but `dnsmasq` drops to the `nobody` group/user.
@@ -16,6 +18,12 @@ All notable changes to this project are documented here. The format is based on
 - `test_harness.sh` now starts `fiero-prompt watch` alongside the D-Bus monitor.
   Since v2.0.0 the daemon never touches D-Bus, so a bare `dbus-monitor` could never
   observe a `Notify` signal — the harness now exercises the real inotify path.
+
+### Security
+- Exposure score rises from **3.0 OK** to **3.4 OK**, caused solely by restoring
+  `CAP_SETGID`/`CAP_SETUID` to the capability bounding set. They are required for
+  `dnsmasq`'s drop to `nobody` and are used by nothing in Fiero itself. The score
+  stays well inside the 5.0 ceiling enforced by `tests/in-container.sh`.
 
 ### Changed
 - The plug-in and unplug timeout fallbacks are now symmetrical and configurable.

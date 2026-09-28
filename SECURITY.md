@@ -4,6 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
+| 2.1.x   | Yes       |
 | 2.0.x   | Yes       |
 | 1.5.x   | No        |
 | < 1.5   | No        |
@@ -28,7 +29,7 @@ At runtime it is handed to `create_ap` through `/run/fiero-hotspot/create_ap.con
 
 ### Root Daemon Requirement
 
-The service runs as root to perform NAT routing via `iptables` and network configuration. With the systemd sandboxing in `fiero-hotspot.service` it has an exposure score of **3.0 OK** (previously 4.2; `systemd-analyze security fiero-hotspot.service`), now with `NoNewPrivileges=true` and `RestrictRealtime=true` active. Capabilities are bounded to `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID`. `CAP_SETGID`/`CAP_SETUID` are retained **solely** because `dnsmasq` drops to the `nobody` group/user — without them it aborts with `failed to change group-id to nobody: Operation not permitted` and `create_ap` tears the AP down. Nothing in Fiero itself uses them. `CAP_KILL`, `CAP_DAC_OVERRIDE`, `CAP_SYS_RESOURCE`, `CAP_CHOWN` and `CAP_AUDIT_WRITE` remain fully dropped. The daemon no longer switches users or opens PAM sessions: user-facing desktop notifications are emitted by the unprivileged `fiero-prompt watch` daemon, which reads the world-readable IPC files (`/run/fiero-hotspot/state`, `/run/fiero-hotspot/events`, mode `0644` in a mode `0755` directory) and calls `notify-send` from the user's own session.
+The service runs as root to perform NAT routing via `iptables` and network configuration. With the systemd sandboxing in `fiero-hotspot.service` it has an exposure score of **3.4 OK** (previously 4.2; `systemd-analyze security fiero-hotspot.service`), now with `NoNewPrivileges=true` and `RestrictRealtime=true` active. Capabilities are bounded to `CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETGID CAP_SETUID`. `CAP_SETGID`/`CAP_SETUID` are retained **solely** because `dnsmasq` drops to the `nobody` group/user — without them it aborts with `failed to change group-id to nobody: Operation not permitted` and `create_ap` tears the AP down. Nothing in Fiero itself uses them. `CAP_KILL`, `CAP_DAC_OVERRIDE`, `CAP_SYS_RESOURCE`, `CAP_CHOWN` and `CAP_AUDIT_WRITE` remain fully dropped. The daemon no longer switches users or opens PAM sessions: user-facing desktop notifications are emitted by the unprivileged `fiero-prompt watch` daemon, which reads the world-readable IPC files (`/run/fiero-hotspot/state`, `/run/fiero-hotspot/events`, mode `0644` in a mode `0755` directory) and calls `notify-send` from the user's own session.
 
 ### Config File Sourcing
 
