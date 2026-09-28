@@ -137,7 +137,7 @@ COOLDOWN=11
 ac_online() {
     local supply
     for supply in /sys/class/power_supply/*; do
-        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" &&
+        if [ -f "$supply/type" ] && grep -qE "^(Mains|USB)$" "$supply/type" &&
             [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
             return 0
         fi
@@ -246,6 +246,9 @@ if [ "$current_state" = "online" ]; then
             exit 0
         fi
     fi
+    # The cable can be pulled while the prompt sits on screen; re-read the
+    # power state now so a manual "Start" never brings the AP up on battery.
+    ac_online || exit 0
     sudo -n /usr/bin/systemctl start fiero-hotspot.service
 else
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC disconnected. Stop Fiero Hotspot?" \

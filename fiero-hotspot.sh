@@ -19,7 +19,7 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-VERSION="2.1.0"
+VERSION="2.1.1"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 LOCK_FILE="/run/fiero-hotspot.lock"
@@ -164,7 +164,7 @@ ac_online() {
     fi
     local supply
     for supply in /sys/class/power_supply/*; do
-        if [ -f "$supply/type" ] && grep -q "^Mains$" "$supply/type" &&
+        if [ -f "$supply/type" ] && grep -qE "^(Mains|USB)$" "$supply/type" &&
             [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
             return 0
         fi

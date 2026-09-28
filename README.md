@@ -1,6 +1,6 @@
 # Fiero Hotspot
 
-![Version](https://img.shields.io/badge/version-v2.1.0-blue)
+![Version](https://img.shields.io/badge/version-v2.1.1-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 [![CI](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml/badge.svg)](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml)
 

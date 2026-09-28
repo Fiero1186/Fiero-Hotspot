@@ -176,6 +176,15 @@ if [ "$KEEP_CONFIG" -eq 0 ]; then
             break
         fi
     done
+    # USB-C Power Delivery chargers (UCSI) register as type=USB, not Mains.
+    if [ -z "$POWER_SUPPLY" ]; then
+        for supply in /sys/class/power_supply/*; do
+            if [ -f "$supply/type" ] && grep -q "^USB$" "$supply/type"; then
+                POWER_SUPPLY=$(basename "$supply")
+                break
+            fi
+        done
+    fi
 
     if [ -z "$POWER_SUPPLY" ]; then
         echo "Could not detect the AC power supply name."

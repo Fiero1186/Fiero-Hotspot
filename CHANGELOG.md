@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-28
+
+### Fixed
+- Added USB-C Power Delivery detection (`type=USB`) fallback across `install.sh`, `fiero-hotspot.sh`, and `fiero-prompt.sh` for laptops without dedicated `Mains` power nodes.
+- Updated `99-fiero-hotspot.rules` to match `Mains|USB` power supplies and dropped the login-shell `-` from `su` to eliminate `.profile` execution overhead on power state changes.
+- Added an immediate `ac_online` re-check prior to starting the systemd service in `fiero-prompt.sh` to prevent starting on battery when a prompt is answered after unplugging.
+
 ## [2.1.0] - 2026-09-28
 
 ### Fixed
@@ -81,7 +88,7 @@ All notable changes to this project are documented here. The format is based on
   (`CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE`), dropping `CAP_SETUID`,
   `CAP_SETGID`, `CAP_KILL`, `CAP_DAC_OVERRIDE`, `CAP_SYS_RESOURCE`, `CAP_CHOWN` and
   `CAP_AUDIT_WRITE`.
-  *(The `CAP_SETUID`/`CAP_SETGID` drop broke startup — see `[Unreleased]`.)*
+  *(The `CAP_SETUID`/`CAP_SETGID` drop broke startup — fixed in `[2.1.0]`.)*
 - Exposure score improves from **4.2 OK** to **3.0 OK**
   (`systemd-analyze security`).
 
