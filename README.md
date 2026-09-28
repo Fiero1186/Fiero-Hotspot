@@ -84,7 +84,7 @@ The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses
 ```
 udev event (AC online/offline)
   └─> 99-fiero-hotspot.rules
-        └─> systemd-run --no-block --collect -- su - <user> -c /usr/local/bin/fiero-prompt
+        └─> systemd-run --no-block --collect --property=KillMode=process -- su <user> -c /usr/local/bin/fiero-prompt
               ├─> setsid --fork fiero-prompt watch   (detached event watcher, one per session)
               └─> sudo -n systemctl start/stop fiero-hotspot.service
                     └─> /usr/local/bin/fiero-hotspot {start|stop}
@@ -95,7 +95,7 @@ udev event (AC online/offline)
                                       └─> notify-send (as the logged-in user)
 ```
 
-The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly. The first prompt run also spawns a detached, flock-serialized event watcher (`fiero-prompt watch`) that stays alive for the session.
+The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly. The first prompt run also spawns a detached, flock-serialized event watcher (`fiero-prompt watch`) that stays alive for the session. That watcher is a child of the transient unit, and `setsid` severs the session but **not** the cgroup, so the rule pins `KillMode=process`: the default `control-group` would SIGTERM the whole cgroup — watcher included — the moment `su` exits, silently dropping every `STARTING`/`LIVE` notification. The transient unit then lingers `inactive` for as long as the watcher runs.
 
 ### Signal Handling
 

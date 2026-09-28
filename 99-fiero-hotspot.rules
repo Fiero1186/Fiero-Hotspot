@@ -1,3 +1,8 @@
 # NOTE: @TARGET_USER@ is dynamically replaced by install.sh during installation.
-ACTION=="change", SUBSYSTEM=="power_supply", ATTR{type}=="Mains|USB", RUN+="/usr/bin/systemd-run --no-block --collect -- /usr/bin/su @TARGET_USER@ -c /usr/local/bin/fiero-prompt"
+# KillMode=process is required: systemd-run creates a transient *service* unit,
+# whose default KillMode=control-group SIGTERMs every remaining process in the
+# cgroup once `su` exits. `setsid --fork` detaches fiero-prompt watch from the
+# session but not from the cgroup, so without this the watcher is killed before
+# the daemon emits STARTING/LIVE and lifecycle notifications never appear.
+ACTION=="change", SUBSYSTEM=="power_supply", ATTR{type}=="Mains|USB", RUN+="/usr/bin/systemd-run --no-block --collect --property=KillMode=process -- /usr/bin/su @TARGET_USER@ -c /usr/local/bin/fiero-prompt"
 # END OF FILE
