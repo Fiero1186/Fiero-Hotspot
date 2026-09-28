@@ -40,6 +40,16 @@ install_as_tester() {
     [ -x /usr/local/bin/fiero-hotspot ]
 }
 
+@test "the udev rule keeps the event watcher alive past the transient unit" {
+    # systemd-run builds a transient service unit whose default KillMode is
+    # control-group, so the setsid'd fiero-prompt watch child is SIGTERMed with
+    # the unit. The rule must pin KillMode=process or STARTING/LIVE
+    # notifications never arrive.
+    run install_as_tester "$ANSWERS"
+    [ "$status" -eq 0 ]
+    grep -q -- '--property=KillMode=process' /etc/udev/rules.d/99-fiero-hotspot.rules
+}
+
 @test "answering no to both timeout questions disables both fallbacks" {
     run install_as_tester 'My Hotspot\ngoodpass123\ngoodpass123\n\nn\nn\n'
     [ "$status" -eq 0 ]

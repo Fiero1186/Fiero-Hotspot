@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-09-28
+
+### Fixed
+- Fixed missing `STARTING` and `LIVE` desktop notifications by adding `--property=KillMode=process` to the udev `systemd-run` rule. Prevents systemd control-group teardown from terminating the detached `fiero-prompt watch` process when the prompt script exits.
+
 ## [2.1.2] - 2026-09-28
 
 ### Changed
