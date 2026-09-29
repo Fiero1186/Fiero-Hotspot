@@ -2,6 +2,10 @@
 Description=Fiero Auto Hotspot
 After=network.target NetworkManager.service
 Wants=network.target
+# A crash is worth another try; a dead upstream or a missing interface is not
+# (exit 75, see monitor_hotspot). Bounded so a persistent fault cannot loop.
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -11,7 +15,9 @@ StandardError=journal
 ExecStart=/usr/local/bin/fiero-hotspot start
 ExecStop=/usr/local/bin/fiero-hotspot stop
 TimeoutStopSec=60s
-Restart=no
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=75
 
 # /run/fiero-hotspot (mode 0755) holds the create_ap config file (with the
 # passphrase), the create_ap PID, the AP interface name, and the state/event

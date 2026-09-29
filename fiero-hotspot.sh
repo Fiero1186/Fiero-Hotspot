@@ -44,9 +44,16 @@ SNAP_NM="$SNAP_DIR/nm.conf"
 SNAP_NM_ABSENT="$SNAP_DIR/nm.absent"
 
 UPSTREAM_GRACE=15
+UPSTREAM_RETRIES=3
+UPSTREAM_BACKOFF=10
+UPSTREAM_POLL=1
+UPSTREAM_RECHECK=2
+DEVICE_CONFIRM=5
 AP_START_TIMEOUT=8
 AP_STOP_TIMEOUT=15
 CONFDIR_TICKS=30
+EXIT_CRASH=1
+EXIT_UPSTREAM=75
 
 # --- Utility Functions ---
 escape_regex() {
@@ -506,31 +513,49 @@ detect_channel() {
     get_channel "$INTERFACE" && CHANNEL="$CH"
 }
 
+# Classify the upstream link. "gone" is not a disassociation: iw itself
+# failed, which means the interface is missing, renamed, or its driver died.
+# Waiting cannot bring an absent interface back, so it must not be treated
+# like a roam, and a single transient error must not be fatal either.
+LINK_STATE=""
+upstream_state() {
+    local out rc
+    out=$(iw dev "$INTERFACE" link 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        LINK_STATE="gone"
+    elif printf '%s' "$out" | grep -q "Connected to"; then
+        LINK_STATE="up"
+    else
+        LINK_STATE="down"
+    fi
+}
+
 # Watch the upstream link while the AP runs: follow channel changes, stop when
 # upstream is gone for good, stop when create_ap dies.
 monitor_hotspot() {
-    local last_channel="$CHANNEL" down_since="" poll_int=2
-    local now link_out link_rc current_ch
+    local last_channel="$CHANNEL" down_since="" next_check=0 retries=0
+    local backoff="$UPSTREAM_BACKOFF" poll_int=2 now current_ch
 
     while true; do
         if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
             if [ -f "$STOP_FLAG" ]; then
                 log "INFO" "create_ap stopped on request."
-            else
-                log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
-                set_state "ERROR" "Hotspot stopped: create_ap process exited"
-                return 1
+                return 0
             fi
-            break
+            log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
+            set_state "ERROR" "Hotspot stopped: create_ap process exited"
+            return "$EXIT_CRASH"
         fi
 
         now=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
-        link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
-        link_rc=$?
+        upstream_state
 
-        if [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Connected to"; then
+        if [ "$LINK_STATE" = "up" ]; then
             down_since=""
-            poll_int=2
+            retries=0
+            next_check=0
+            backoff="$UPSTREAM_BACKOFF"
 
             current_ch=""
             if get_channel "$INTERFACE"; then current_ch="$CH"; fi
@@ -539,40 +564,79 @@ monitor_hotspot() {
                 if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
                     log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
                     set_state "CHANNEL_UNSUPPORTED" "Hotspot stopped: channel $current_ch unsupported"
-                    break
+                    return 0
                 fi
 
                 set_state "CHANNEL_DRIFT" "Hotspot restarting: channel changed to $current_ch"
                 stop_create_ap
+
+                # stop_create_ap can take AP_STOP_TIMEOUT seconds. The upstream
+                # may have dropped or moved again in that window, so re-read it
+                # instead of relaunching a create_ap against a dead or moved link.
+                if ! detect_channel; then
+                    log "INFO" "Upstream went away during the channel switch; not relaunching."
+                    set_state "DISCONNECTED" "Hotspot stopped: upstream Wi-Fi disconnected"
+                    return "$EXIT_UPSTREAM"
+                fi
+                if [ "$CHANNEL" != "$current_ch" ]; then
+                    log "WARN" "Upstream moved again ($current_ch -> $CHANNEL) during the switch."
+                    current_ch="$CHANNEL"
+                    if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
+                        log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
+                        set_state "CHANNEL_UNSUPPORTED" "Hotspot stopped: channel $current_ch unsupported"
+                        return 0
+                    fi
+                fi
+
                 CHANNEL="$current_ch"
                 last_channel="$current_ch"
-
                 launch_create_ap "$CHANNEL"
                 if ! wait_for_ap; then
                     log "ERR" "Failed to bring up AP on channel $CHANNEL within ${AP_START_TIMEOUT}s."
                     set_state "ERROR" "Hotspot stopped: AP re-init failed"
-                    break
+                    return "$EXIT_CRASH"
                 fi
                 log "INFO" "create_ap successfully restarted on channel $CHANNEL (pid $CREATE_AP_PID)."
                 set_state "LIVE" "Hotspot is live on channel $CHANNEL!"
             fi
+        elif [ "$LINK_STATE" = "gone" ]; then
+            # A failed iw call is a device-level problem. Re-check once so a
+            # single transient error is not fatal, then stop.
+            log "WARN" "iw failed on $INTERFACE. Re-checking in ${DEVICE_CONFIRM}s."
+            sleep "$DEVICE_CONFIRM"
+            upstream_state
+            if [ "$LINK_STATE" = "gone" ]; then
+                log "ERR" "Interface $INTERFACE is unusable (iw exits non-zero). Was it renamed or removed? Shutting down hotspot."
+                set_state "DISCONNECTED" "Hotspot stopped: interface $INTERFACE is gone"
+                return "$EXIT_UPSTREAM"
+            fi
+            log "INFO" "$INTERFACE responded again; continuing."
+            down_since=""
+            next_check=0
+            retries=0
         else
-            # "Not connected", or iw itself failed (driver reset, card removed)
-            poll_int=1
+            # Genuine disassociation: a roam or a dropped link. Hold the AP up
+            # through UPSTREAM_GRACE, then consume bounded backoff windows
+            # before tearing down. They are polled, not slept through, so a
+            # recovery is noticed within UPSTREAM_RECHECK.
             if [ -z "$down_since" ]; then
                 down_since="$now"
-            fi
-            if [ $((now - down_since)) -ge "$UPSTREAM_GRACE" ]; then
-                sleep 2
-                if ! iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
+                retries=0
+                next_check=$((now + UPSTREAM_GRACE))
+                poll_int="$UPSTREAM_POLL"
+            elif [ "$now" -ge "$next_check" ]; then
+                if [ "$retries" -ge "$UPSTREAM_RETRIES" ]; then
                     log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
                     set_state "DISCONNECTED" "Hotspot stopped: upstream Wi-Fi disconnected"
-                    break
+                    return "$EXIT_UPSTREAM"
                 fi
-                down_since=""
+                retries=$((retries + 1))
+                log "WARN" "Upstream still down; retry window $retries/$UPSTREAM_RETRIES for ${backoff}s."
+                next_check=$((now + backoff))
+                backoff=$((backoff * 2))
+                poll_int="$UPSTREAM_RECHECK"
             fi
         fi
-
         sleep "$poll_int"
     done
 }

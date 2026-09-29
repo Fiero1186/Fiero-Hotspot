@@ -110,10 +110,11 @@ teardown() {
     kill "$other"
 }
 
-@test "a failing 'iw dev link' counts as upstream lost and shuts down" {
+@test "a failing 'iw dev link' means the interface is gone, not a roam" {
     start_daemon
     touch "$M/link-fails"
-    wait_for_log "disconnected permanently" "$M/start.log" 25
+    wait_for_log "is unusable" "$M/start.log" 25
+    refute grep -q "disconnected permanently" "$M/start.log"
 }
 
 @test "unsupported upstream channel aborts without starting create_ap" {
