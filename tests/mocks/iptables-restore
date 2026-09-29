@@ -1,0 +1,8 @@
+#!/bin/bash
+# Test double for iptables-restore. Records the call and its stdin so a test
+# can prove the rollback consumed the pre-launch snapshot and not something
+# else.
+M=/tmp/mock-state
+echo "iptables-restore $*" >>"$M/events"
+cat >"$M/iptables-restore.input"
+exit 0

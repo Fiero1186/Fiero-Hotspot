@@ -204,6 +204,42 @@ edge_assert_equal "Phase 4.8: shquote() double quotes" "$(shquote 'say "hi"')" "
 # ------------------------------------------------------------------------------
 # 5. install.sh Validation Tests (replicated logic, install.sh NOT executed)
 # ------------------------------------------------------------------------------
+# Phases 5-7 below run hand-copied replicas of logic from the real scripts, not
+# the real scripts. A replica silently passing is worse than no test: it looks
+# like coverage while the actual code drifts. replica_drift_check makes future
+# drift visible by verifying each copied function still exists and has not
+# moved far from where it stood when this guard was added.
+#
+# NOTE: several of these replicas were already written against much older line
+# numbers (ac_online was cited as 23-32 and now lives at 152). The cited values
+# below are the CURRENT lines, so this measures movement from today onwards,
+# not the historical drift, which is a separate cleanup.
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+replica_drift_check() {
+	local file="$1" fn="$2" cited="$3" now_line
+	now_line=$(grep -n "^${fn}() {" "$REPO_ROOT/$file" 2>/dev/null | head -1 | cut -d: -f1)
+	if [[ -z "$now_line" ]]; then
+		edge_result "replica $fn: $file still defines $fn()" FAIL
+		return
+	fi
+	edge_result "replica $fn: $file still defines $fn()" PASS
+	if ((now_line > cited + 40)); then
+		edge_result "replica $fn: within 40 lines of $cited (now $now_line)" FAIL
+	else
+		edge_result "replica $fn: within 40 lines of $cited (now $now_line)" PASS
+	fi
+}
+
+replica_drift_check "install.sh" "has_non_printable_ascii" 108
+replica_drift_check "fiero-prompt.sh" "ac_online" 152
+replica_drift_check "fiero-prompt.sh" "freq_to_channel" 99
+replica_drift_check "fiero-prompt.sh" "get_channel" 111
+replica_drift_check "fiero-hotspot.sh" "load_config" 142
+replica_drift_check "fiero-hotspot.sh" "start_hotspot" 664
+replica_drift_check "fiero-hotspot.sh" "stop_create_ap" 458
+replica_drift_check "fiero-hotspot.sh" "monitor_hotspot" 536
+replica_drift_check "fiero-hotspot.sh" "restore_system_state" 289
+
 # 5a. Dependency detection logic (install.sh lines 14-21)
 cmd_audit() {
 	local missing=()
@@ -816,324 +852,319 @@ SCRIPT_UNDER_TEST="/usr/local/bin/fiero-hotspot"
 # copy, every result below describes old code - say so loudly.
 REPO_SCRIPT="$(cd "$(dirname "$0")" && pwd)/fiero-hotspot.sh"
 if [[ -f "$REPO_SCRIPT" ]] && ! cmp -s "$REPO_SCRIPT" "$SCRIPT_UNDER_TEST"; then
-	echo "[WARN] $SCRIPT_UNDER_TEST differs from $REPO_SCRIPT - re-run install.sh to test your changes."
+	echo "[HARD FAIL] $SCRIPT_UNDER_TEST differs from $REPO_SCRIPT - re-run install.sh to test your changes."
+	echo "             Skipping Phase 9: every result below would describe stale code."
 	edge_result "Phase 9.0: installed fiero-hotspot matches repository copy" FAIL
+	HARD_FAIL=1
+	PHASE9_BLOCKED=1
 else
 	edge_result "Phase 9.0: installed fiero-hotspot matches repository copy" PASS
+	PHASE9_BLOCKED=0
 fi
 
-# 9a. Unprivileged execution & error routing
-set +e
-SU_START_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST start" 2>&1)
-SU_START_RC=$?
-SU_STOP_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST stop" 2>&1)
-SU_STOP_RC=$?
-SU_STATUS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST status" 2>&1)
-SU_STATUS_RC=$?
-SU_CLIENTS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST clients" 2>&1)
-SU_CLIENTS_RC=$?
-SU_VERSION_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST version" 2>&1)
-SU_VERSION_RC=$?
-SU_MODE_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST mode" 2>&1)
-SU_MODE_RC=$?
-set -e
+if [[ "${PHASE9_BLOCKED:-0}" -eq 0 ]]; then
 
-if [[ "$SU_START_RC" -eq 1 ]]; then
-	edge_result "Phase 9a.1: unprivileged start -> exit 1" PASS
-else
-	edge_result "Phase 9a.1: unprivileged start -> exit 1" FAIL
-fi
-if [[ "$SU_START_OUT" == *"Starting the hotspot requires root"* ]]; then
-	edge_result "Phase 9a.2: unprivileged start -> correct error message" PASS
-else
-	edge_result "Phase 9a.2: unprivileged start -> correct error message" FAIL
-fi
+	# 9a. Unprivileged execution & error routing
+	set +e
+	SU_START_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST start" 2>&1)
+	SU_START_RC=$?
+	SU_STOP_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST stop" 2>&1)
+	SU_STOP_RC=$?
+	SU_STATUS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST status" 2>&1)
+	SU_STATUS_RC=$?
+	SU_CLIENTS_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST clients" 2>&1)
+	SU_CLIENTS_RC=$?
+	SU_VERSION_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST version" 2>&1)
+	SU_VERSION_RC=$?
+	SU_MODE_OUT=$(su - "$TARGET_USER" -c "$SCRIPT_UNDER_TEST mode" 2>&1)
+	SU_MODE_RC=$?
+	set -e
 
-if [[ "$SU_STOP_RC" -eq 1 ]]; then
-	edge_result "Phase 9a.3: unprivileged stop -> exit 1" PASS
-else
-	edge_result "Phase 9a.3: unprivileged stop -> exit 1" FAIL
-fi
-if [[ "$SU_STOP_OUT" == *"Stopping the hotspot requires root"* ]]; then
-	edge_result "Phase 9a.4: unprivileged stop -> correct error message" PASS
-else
-	edge_result "Phase 9a.4: unprivileged stop -> correct error message" FAIL
-fi
-
-if [[ "$SU_STATUS_RC" -eq 1 ]]; then
-	edge_result "Phase 9a.5: unprivileged status -> exit 1" PASS
-else
-	edge_result "Phase 9a.5: unprivileged status -> exit 1" FAIL
-fi
-if [[ "$SU_STATUS_OUT" == *"Status requires root"* ]]; then
-	edge_result "Phase 9a.6: unprivileged status -> correct error message" PASS
-else
-	edge_result "Phase 9a.6: unprivileged status -> correct error message" FAIL
-fi
-
-if [[ "$SU_CLIENTS_RC" -eq 1 ]]; then
-	edge_result "Phase 9a.7: unprivileged clients -> exit 1" PASS
-else
-	edge_result "Phase 9a.7: unprivileged clients -> exit 1" FAIL
-fi
-if [[ "$SU_CLIENTS_OUT" == *"Client listing requires root"* ]]; then
-	edge_result "Phase 9a.8: unprivileged clients -> correct error message" PASS
-else
-	edge_result "Phase 9a.8: unprivileged clients -> correct error message" FAIL
-fi
-
-if [[ "$SU_VERSION_RC" -eq 0 ]]; then
-	edge_result "Phase 9a.10: unprivileged version -> exit 0" PASS
-else
-	edge_result "Phase 9a.10: unprivileged version -> exit 0" FAIL
-fi
-if [[ "$SU_VERSION_OUT" == *"fiero-hotspot v"* ]]; then
-	edge_result "Phase 9a.11: unprivileged version -> outputs version string" PASS
-else
-	edge_result "Phase 9a.11: unprivileged version -> outputs version string" FAIL
-fi
-
-if [[ "$SU_MODE_RC" -eq 1 ]]; then
-	edge_result "Phase 9a.12: unprivileged mode -> exit 1" PASS
-else
-	edge_result "Phase 9a.12: unprivileged mode -> exit 1" FAIL
-fi
-if [[ "$SU_MODE_OUT" == *"Mode toggle requires root"* ]]; then
-	edge_result "Phase 9a.13: unprivileged mode -> correct error message" PASS
-else
-	edge_result "Phase 9a.13: unprivileged mode -> correct error message" FAIL
-fi
-
-# Ensure no raw permission denied or flock errors leaked
-SU_ALL_OUTPUT="$SU_START_OUT $SU_STOP_OUT $SU_STATUS_OUT $SU_CLIENTS_OUT $SU_VERSION_OUT"
-if [[ "$SU_ALL_OUTPUT" != *"Permission denied"* ]] && [[ "$SU_ALL_OUTPUT" != *"Bad file descriptor"* ]]; then
-	edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" PASS
-else
-	edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" FAIL
-fi
-
-# 9b. CLI dispatcher & help fallbacks
-set +e
-HELP_EMPTY=$("$SCRIPT_UNDER_TEST" 2>&1)
-HELP_EMPTY_RC=$?
-HELP_H=$("$SCRIPT_UNDER_TEST" -h 2>&1)
-HELP_H_RC=$?
-HELP_DOUBLE=$("$SCRIPT_UNDER_TEST" --help 2>&1)
-HELP_DOUBLE_RC=$?
-HELP_WORD=$("$SCRIPT_UNDER_TEST" help 2>&1)
-HELP_WORD_RC=$?
-HELP_BOGUS=$("$SCRIPT_UNDER_TEST" bogus 2>&1)
-HELP_BOGUS_RC=$?
-set -e
-
-if [[ "$HELP_EMPTY_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.1: no arguments -> exit 0" PASS
-else
-	edge_result "Phase 9b.1: no arguments -> exit 0" FAIL
-fi
-if [[ "$HELP_H_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.2: -h flag -> exit 0" PASS
-else
-	edge_result "Phase 9b.2: -h flag -> exit 0" FAIL
-fi
-if [[ "$HELP_DOUBLE_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.3: --help flag -> exit 0" PASS
-else
-	edge_result "Phase 9b.3: --help flag -> exit 0" FAIL
-fi
-if [[ "$HELP_WORD_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.4: 'help' subcommand -> exit 0" PASS
-else
-	edge_result "Phase 9b.4: 'help' subcommand -> exit 0" FAIL
-fi
-
-for help_var in HELP_EMPTY HELP_H HELP_DOUBLE HELP_WORD; do
-	if [[ "${!help_var}" != *"Usage: fiero-hotspot"* ]]; then
-		edge_result "Phase 9b.5: all help paths print usage" FAIL
-		break
+	if [[ "$SU_START_RC" -eq 1 ]]; then
+		edge_result "Phase 9a.1: unprivileged start -> exit 1" PASS
+	else
+		edge_result "Phase 9a.1: unprivileged start -> exit 1" FAIL
 	fi
-done
-if [[ "$HELP_EMPTY" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_H" == *"Usage: fiero-hotspot"* ]] &&
-	[[ "$HELP_DOUBLE" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_WORD" == *"Usage: fiero-hotspot"* ]]; then
-	edge_result "Phase 9b.5: all help paths print usage" PASS
-fi
+	if [[ "$SU_START_OUT" == *"Starting the hotspot requires root"* ]]; then
+		edge_result "Phase 9a.2: unprivileged start -> correct error message" PASS
+	else
+		edge_result "Phase 9a.2: unprivileged start -> correct error message" FAIL
+	fi
 
-# 9b-new. version subcommand and aliases
-set +e
-SCRIPT_VERSION=$(grep -m1 '^VERSION=' "$SCRIPT_UNDER_TEST" | cut -d'"' -f2)
-EXPECTED_VERSION="fiero-hotspot v${SCRIPT_VERSION}"
-VER_LONG="$("$SCRIPT_UNDER_TEST" version 2>&1)"
-VER_LONG_RC=$?
-VER_SHORT=$("$SCRIPT_UNDER_TEST" -v 2>&1)
-VER_SHORT_RC=$?
-VER_DASH=$("$SCRIPT_UNDER_TEST" --version 2>&1)
-VER_DASH_RC=$?
-set -e
+	if [[ "$SU_STOP_RC" -eq 1 ]]; then
+		edge_result "Phase 9a.3: unprivileged stop -> exit 1" PASS
+	else
+		edge_result "Phase 9a.3: unprivileged stop -> exit 1" FAIL
+	fi
+	if [[ "$SU_STOP_OUT" == *"Stopping the hotspot requires root"* ]]; then
+		edge_result "Phase 9a.4: unprivileged stop -> correct error message" PASS
+	else
+		edge_result "Phase 9a.4: unprivileged stop -> correct error message" FAIL
+	fi
 
-if [[ "$VER_LONG_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.8: 'version' -> exit 0" PASS
-else
-	edge_result "Phase 9b.8: 'version' -> exit 0" FAIL
-fi
-if [[ "$VER_LONG" == "$EXPECTED_VERSION" ]]; then
-	edge_result "Phase 9b.9: 'version' -> correct output" PASS
-else
-	edge_result "Phase 9b.9: 'version' -> correct output" FAIL
-fi
-if [[ "$VER_SHORT_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.10: '-v' flag -> exit 0" PASS
-else
-	edge_result "Phase 9b.10: '-v' flag -> exit 0" FAIL
-fi
-if [[ "$VER_SHORT" == "$EXPECTED_VERSION" ]]; then
-	edge_result "Phase 9b.11: '-v' flag -> correct output" PASS
-else
-	edge_result "Phase 9b.11: '-v' flag -> correct output" FAIL
-fi
-if [[ "$VER_DASH_RC" -eq 0 ]]; then
-	edge_result "Phase 9b.12: '--version' flag -> exit 0" PASS
-else
-	edge_result "Phase 9b.12: '--version' flag -> exit 0" FAIL
-fi
-if [[ "$VER_DASH" == "$EXPECTED_VERSION" ]]; then
-	edge_result "Phase 9b.13: '--version' flag -> correct output" PASS
-else
-	edge_result "Phase 9b.13: '--version' flag -> correct output" FAIL
-fi
+	if [[ "$SU_STATUS_RC" -eq 1 ]]; then
+		edge_result "Phase 9a.5: unprivileged status -> exit 1" PASS
+	else
+		edge_result "Phase 9a.5: unprivileged status -> exit 1" FAIL
+	fi
+	if [[ "$SU_STATUS_OUT" == *"Status requires root"* ]]; then
+		edge_result "Phase 9a.6: unprivileged status -> correct error message" PASS
+	else
+		edge_result "Phase 9a.6: unprivileged status -> correct error message" FAIL
+	fi
 
-# 9b-new2. mode subcommand: config file updates
-CONFIG_BACKUP="$EDGE_TMP_DIR/fiero-hotspot.conf.bak"
-cp -f /etc/fiero-hotspot.conf "$CONFIG_BACKUP" 2>/dev/null || true
+	if [[ "$SU_CLIENTS_RC" -eq 1 ]]; then
+		edge_result "Phase 9a.7: unprivileged clients -> exit 1" PASS
+	else
+		edge_result "Phase 9a.7: unprivileged clients -> exit 1" FAIL
+	fi
+	if [[ "$SU_CLIENTS_OUT" == *"Client listing requires root"* ]]; then
+		edge_result "Phase 9a.8: unprivileged clients -> correct error message" PASS
+	else
+		edge_result "Phase 9a.8: unprivileged clients -> correct error message" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" mode auto >/dev/null 2>&1
-MODE_AUTO_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
-if [[ "$MODE_AUTO_VAL" == "'true'" ]] || [[ "$MODE_AUTO_VAL" == "true" ]]; then
-	edge_result "Phase 9b.14: 'mode auto' -> AUTO_PROMPT=true in config" PASS
-else
-	edge_result "Phase 9b.14: 'mode auto' -> AUTO_PROMPT=true in config" FAIL
-fi
+	if [[ "$SU_VERSION_RC" -eq 0 ]]; then
+		edge_result "Phase 9a.10: unprivileged version -> exit 0" PASS
+	else
+		edge_result "Phase 9a.10: unprivileged version -> exit 0" FAIL
+	fi
+	if [[ "$SU_VERSION_OUT" == *"fiero-hotspot v"* ]]; then
+		edge_result "Phase 9a.11: unprivileged version -> outputs version string" PASS
+	else
+		edge_result "Phase 9a.11: unprivileged version -> outputs version string" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" mode manual >/dev/null 2>&1
-MODE_MAN_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
-if [[ "$MODE_MAN_VAL" == "'false'" ]] || [[ "$MODE_MAN_VAL" == "false" ]]; then
-	edge_result "Phase 9b.15: 'mode manual' -> AUTO_PROMPT=false in config" PASS
-else
-	edge_result "Phase 9b.15: 'mode manual' -> AUTO_PROMPT=false in config" FAIL
-fi
+	if [[ "$SU_MODE_RC" -eq 1 ]]; then
+		edge_result "Phase 9a.12: unprivileged mode -> exit 1" PASS
+	else
+		edge_result "Phase 9a.12: unprivileged mode -> exit 1" FAIL
+	fi
+	if [[ "$SU_MODE_OUT" == *"Mode toggle requires root"* ]]; then
+		edge_result "Phase 9a.13: unprivileged mode -> correct error message" PASS
+	else
+		edge_result "Phase 9a.13: unprivileged mode -> correct error message" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" mode on >/dev/null 2>&1
-MODE_ON_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
-if [[ "$MODE_ON_VAL" == "'true'" ]] || [[ "$MODE_ON_VAL" == "true" ]]; then
-	edge_result "Phase 9b.16: 'mode on' alias -> AUTO_PROMPT=true in config" PASS
-else
-	edge_result "Phase 9b.16: 'mode on' alias -> AUTO_PROMPT=true in config" FAIL
-fi
+	# Ensure no raw permission denied or flock errors leaked
+	SU_ALL_OUTPUT="$SU_START_OUT $SU_STOP_OUT $SU_STATUS_OUT $SU_CLIENTS_OUT $SU_VERSION_OUT"
+	if [[ "$SU_ALL_OUTPUT" != *"Permission denied"* ]] && [[ "$SU_ALL_OUTPUT" != *"Bad file descriptor"* ]]; then
+		edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" PASS
+	else
+		edge_result "Phase 9a.9: no Permission denied or flock errors in unprivileged output" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" mode off >/dev/null 2>&1
-MODE_OFF_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
-if [[ "$MODE_OFF_VAL" == "'false'" ]] || [[ "$MODE_OFF_VAL" == "false" ]]; then
-	edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" PASS
-else
-	edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" FAIL
-fi
+	# 9b. CLI dispatcher & help fallbacks
+	set +e
+	HELP_EMPTY=$("$SCRIPT_UNDER_TEST" 2>&1)
+	HELP_EMPTY_RC=$?
+	HELP_H=$("$SCRIPT_UNDER_TEST" -h 2>&1)
+	HELP_H_RC=$?
+	HELP_DOUBLE=$("$SCRIPT_UNDER_TEST" --help 2>&1)
+	HELP_DOUBLE_RC=$?
+	HELP_WORD=$("$SCRIPT_UNDER_TEST" help 2>&1)
+	HELP_WORD_RC=$?
+	HELP_BOGUS=$("$SCRIPT_UNDER_TEST" bogus 2>&1)
+	HELP_BOGUS_RC=$?
+	set -e
 
-# Restore original config file
-if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" ]]; then
-	cp -f "$CONFIG_BACKUP" /etc/fiero-hotspot.conf 2>/dev/null || true
-	rm -f "$CONFIG_BACKUP" 2>/dev/null || true
-	CONFIG_BACKUP=""
-fi
+	if [[ "$HELP_EMPTY_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.1: no arguments -> exit 0" PASS
+	else
+		edge_result "Phase 9b.1: no arguments -> exit 0" FAIL
+	fi
+	if [[ "$HELP_H_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.2: -h flag -> exit 0" PASS
+	else
+		edge_result "Phase 9b.2: -h flag -> exit 0" FAIL
+	fi
+	if [[ "$HELP_DOUBLE_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.3: --help flag -> exit 0" PASS
+	else
+		edge_result "Phase 9b.3: --help flag -> exit 0" FAIL
+	fi
+	if [[ "$HELP_WORD_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.4: 'help' subcommand -> exit 0" PASS
+	else
+		edge_result "Phase 9b.4: 'help' subcommand -> exit 0" FAIL
+	fi
 
-if [[ "$HELP_BOGUS_RC" -eq 1 ]]; then
-	edge_result "Phase 9b.6: unknown subcommand -> exit 1" PASS
-else
-	edge_result "Phase 9b.6: unknown subcommand -> exit 1" FAIL
-fi
-if [[ "$HELP_BOGUS" == *"[ERR] Unknown action: 'bogus'"* ]]; then
-	edge_result "Phase 9b.7: unknown subcommand -> correct error" PASS
-else
-	edge_result "Phase 9b.7: unknown subcommand -> correct error" FAIL
-fi
+	for help_var in HELP_EMPTY HELP_H HELP_DOUBLE HELP_WORD; do
+		if [[ "${!help_var}" != *"Usage: fiero-hotspot"* ]]; then
+			edge_result "Phase 9b.5: all help paths print usage" FAIL
+			break
+		fi
+	done
+	if [[ "$HELP_EMPTY" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_H" == *"Usage: fiero-hotspot"* ]] &&
+		[[ "$HELP_DOUBLE" == *"Usage: fiero-hotspot"* ]] && [[ "$HELP_WORD" == *"Usage: fiero-hotspot"* ]]; then
+		edge_result "Phase 9b.5: all help paths print usage" PASS
+	fi
 
-# 9c. Cleanup trap isolation (SKIP_CLEANUP=1 validation)
-TRAP_MARKER="/tmp/create_ap.test_trap_cleanup_marker_$$"
-touch "$TRAP_MARKER"
+	# 9b-new. version subcommand and aliases
+	set +e
+	SCRIPT_VERSION=$(grep -m1 '^VERSION=' "$SCRIPT_UNDER_TEST" | cut -d'"' -f2)
+	EXPECTED_VERSION="fiero-hotspot v${SCRIPT_VERSION}"
+	VER_LONG="$("$SCRIPT_UNDER_TEST" version 2>&1)"
+	VER_LONG_RC=$?
+	VER_SHORT=$("$SCRIPT_UNDER_TEST" -v 2>&1)
+	VER_SHORT_RC=$?
+	VER_DASH=$("$SCRIPT_UNDER_TEST" --version 2>&1)
+	VER_DASH_RC=$?
+	set -e
 
-"$SCRIPT_UNDER_TEST" help >/dev/null 2>&1
-if [[ -f "$TRAP_MARKER" ]]; then
-	edge_result "Phase 9c.1: help does not trigger cleanup" PASS
-else
-	edge_result "Phase 9c.1: help does not trigger cleanup" FAIL
-fi
+	if [[ "$VER_LONG_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.8: 'version' -> exit 0" PASS
+	else
+		edge_result "Phase 9b.8: 'version' -> exit 0" FAIL
+	fi
+	if [[ "$VER_LONG" == "$EXPECTED_VERSION" ]]; then
+		edge_result "Phase 9b.9: 'version' -> correct output" PASS
+	else
+		edge_result "Phase 9b.9: 'version' -> correct output" FAIL
+	fi
+	if [[ "$VER_SHORT_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.10: '-v' flag -> exit 0" PASS
+	else
+		edge_result "Phase 9b.10: '-v' flag -> exit 0" FAIL
+	fi
+	if [[ "$VER_SHORT" == "$EXPECTED_VERSION" ]]; then
+		edge_result "Phase 9b.11: '-v' flag -> correct output" PASS
+	else
+		edge_result "Phase 9b.11: '-v' flag -> correct output" FAIL
+	fi
+	if [[ "$VER_DASH_RC" -eq 0 ]]; then
+		edge_result "Phase 9b.12: '--version' flag -> exit 0" PASS
+	else
+		edge_result "Phase 9b.12: '--version' flag -> exit 0" FAIL
+	fi
+	if [[ "$VER_DASH" == "$EXPECTED_VERSION" ]]; then
+		edge_result "Phase 9b.13: '--version' flag -> correct output" PASS
+	else
+		edge_result "Phase 9b.13: '--version' flag -> correct output" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" bogus >/dev/null 2>&1 || true
-if [[ -f "$TRAP_MARKER" ]]; then
-	edge_result "Phase 9c.2: unknown subcommand does not trigger cleanup" PASS
-else
-	edge_result "Phase 9c.2: unknown subcommand does not trigger cleanup" FAIL
-fi
+	# 9b-new2. mode subcommand: config file updates
+	CONFIG_BACKUP="$EDGE_TMP_DIR/fiero-hotspot.conf.bak"
+	cp -f /etc/fiero-hotspot.conf "$CONFIG_BACKUP" 2>/dev/null || true
 
-"$SCRIPT_UNDER_TEST" status >/dev/null 2>&1 || true
-if [[ -f "$TRAP_MARKER" ]]; then
-	edge_result "Phase 9c.3: status does not trigger cleanup" PASS
-else
-	edge_result "Phase 9c.3: status does not trigger cleanup" FAIL
-fi
+	"$SCRIPT_UNDER_TEST" mode auto >/dev/null 2>&1
+	MODE_AUTO_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+	if [[ "$MODE_AUTO_VAL" == "'true'" ]] || [[ "$MODE_AUTO_VAL" == "true" ]]; then
+		edge_result "Phase 9b.14: 'mode auto' -> AUTO_PROMPT=true in config" PASS
+	else
+		edge_result "Phase 9b.14: 'mode auto' -> AUTO_PROMPT=true in config" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" clients >/dev/null 2>&1 || true
-if [[ -f "$TRAP_MARKER" ]]; then
-	edge_result "Phase 9c.4: clients does not trigger cleanup" PASS
-else
-	edge_result "Phase 9c.4: clients does not trigger cleanup" FAIL
-fi
+	"$SCRIPT_UNDER_TEST" mode manual >/dev/null 2>&1
+	MODE_MAN_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+	if [[ "$MODE_MAN_VAL" == "'false'" ]] || [[ "$MODE_MAN_VAL" == "false" ]]; then
+		edge_result "Phase 9b.15: 'mode manual' -> AUTO_PROMPT=false in config" PASS
+	else
+		edge_result "Phase 9b.15: 'mode manual' -> AUTO_PROMPT=false in config" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" version >/dev/null 2>&1 || true
-if [[ -f "$TRAP_MARKER" ]]; then
-	edge_result "Phase 9c.5: version does not trigger cleanup" PASS
-else
-	edge_result "Phase 9c.5: version does not trigger cleanup" FAIL
-fi
+	"$SCRIPT_UNDER_TEST" mode on >/dev/null 2>&1
+	MODE_ON_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+	if [[ "$MODE_ON_VAL" == "'true'" ]] || [[ "$MODE_ON_VAL" == "true" ]]; then
+		edge_result "Phase 9b.16: 'mode on' alias -> AUTO_PROMPT=true in config" PASS
+	else
+		edge_result "Phase 9b.16: 'mode on' alias -> AUTO_PROMPT=true in config" FAIL
+	fi
 
-"$SCRIPT_UNDER_TEST" mode auto >/dev/null 2>&1 || true
-if [[ -f "$TRAP_MARKER" ]]; then
-	edge_result "Phase 9c.6: mode does not trigger cleanup" PASS
-else
-	edge_result "Phase 9c.6: mode does not trigger cleanup" FAIL
-fi
+	"$SCRIPT_UNDER_TEST" mode off >/dev/null 2>&1
+	MODE_OFF_VAL=$(grep '^AUTO_PROMPT=' /etc/fiero-hotspot.conf 2>/dev/null | cut -d= -f2)
+	if [[ "$MODE_OFF_VAL" == "'false'" ]] || [[ "$MODE_OFF_VAL" == "false" ]]; then
+		edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" PASS
+	else
+		edge_result "Phase 9b.17: 'mode off' alias -> AUTO_PROMPT=false in config" FAIL
+	fi
 
-rm -f "$TRAP_MARKER"
+	# Restore original config file
+	if [[ -n "${CONFIG_BACKUP:-}" && -f "$CONFIG_BACKUP" ]]; then
+		cp -f "$CONFIG_BACKUP" /etc/fiero-hotspot.conf 2>/dev/null || true
+		rm -f "$CONFIG_BACKUP" 2>/dev/null || true
+		CONFIG_BACKUP=""
+	fi
 
-# 9d. Service status output format check
-set +e
-STATUS_ROOT_OUT=$("$SCRIPT_UNDER_TEST" status 2>&1)
-STATUS_ROOT_RC=$?
-set -e
+	if [[ "$HELP_BOGUS_RC" -eq 1 ]]; then
+		edge_result "Phase 9b.6: unknown subcommand -> exit 1" PASS
+	else
+		edge_result "Phase 9b.6: unknown subcommand -> exit 1" FAIL
+	fi
+	if [[ "$HELP_BOGUS" == *"[ERR] Unknown action: 'bogus'"* ]]; then
+		edge_result "Phase 9b.7: unknown subcommand -> correct error" PASS
+	else
+		edge_result "Phase 9b.7: unknown subcommand -> correct error" FAIL
+	fi
 
-if [[ "$STATUS_ROOT_RC" -eq 0 ]]; then
-	edge_result "Phase 9d.1: status as root -> exit 0" PASS
-else
-	edge_result "Phase 9d.1: status as root -> exit 0" FAIL
-fi
+	# 9c. Cleanup trap isolation
+	#
+	# The previous version of this phase used a marker file under /tmp named
+	# /tmp/create_ap.test_trap_cleanup_marker_$$ and asserted it survived. That
+	# assertion could never fail: the path does not match is_confdir_path() (no
+	# .conf. component), so the real cleanup would never have removed it anyway -
+	# and Phase 9 runs before Phase 10 starts a hotspot, so there is nothing to
+	# protect in the first place. What is actually worth proving is that a
+	# read-only subcommand leaves daemon state untouched, and - crucially - that
+	# the measurement is sensitive enough to notice when state does change.
+	run_dir_fingerprint() {
+		find /run/fiero-hotspot -maxdepth 2 2>/dev/null | sort
+	}
 
-if [[ "$STATUS_ROOT_OUT" == *"Service"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]]; then
-	edge_result "Phase 9d.2: status output contains Service field" PASS
-else
-	edge_result "Phase 9d.2: status output contains Service field" FAIL
-fi
+	FINGERPRINT_BEFORE=$(run_dir_fingerprint)
+	for _sub in help bogus status clients version mode; do
+		"$SCRIPT_UNDER_TEST" "$_sub" >/dev/null 2>&1 || true
+	done
+	if [[ "$(run_dir_fingerprint)" == "$FINGERPRINT_BEFORE" ]]; then
+		edge_result "Phase 9c.1: read-only subcommands leave /run/fiero-hotspot untouched" PASS
+	else
+		edge_result "Phase 9c.1: read-only subcommands leave /run/fiero-hotspot untouched" FAIL
+	fi
 
-if [[ "$STATUS_ROOT_OUT" == *"Mode"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]]; then
-	edge_result "Phase 9d.4: status output contains Mode field" PASS
-else
-	edge_result "Phase 9d.4: status output contains Mode field" FAIL
-fi
+	# Positive control. `stop` writes state and the stop flag, so the fingerprint
+	# must differ. If it does not, 9c.1 is measuring nothing and would pass
+	# forever - which is exactly the bug this control exists to prevent.
+	FINGERPRINT_BEFORE=$(run_dir_fingerprint)
+	"$SCRIPT_UNDER_TEST" stop >/dev/null 2>&1 || true
+	if [[ "$(run_dir_fingerprint)" != "$FINGERPRINT_BEFORE" ]]; then
+		edge_result "Phase 9c.2: control - stop does change /run/fiero-hotspot" PASS
+	else
+		edge_result "Phase 9c.2: control - stop does change /run/fiero-hotspot" FAIL
+	fi
 
-# Count occurrences of "inactive" in status output
-INACTIVE_COUNT=$(printf '%s\n' "$STATUS_ROOT_OUT" | grep -c "inactive" || true)
-if [[ "$INACTIVE_COUNT" -le 1 ]]; then
-	edge_result "Phase 9d.3: no duplicate inactive in status output" PASS
-else
-	edge_result "Phase 9d.3: no duplicate inactive in status output" FAIL
-fi
+	# 9d. Service status output format check
+	set +e
+	STATUS_ROOT_OUT=$("$SCRIPT_UNDER_TEST" status 2>&1)
+	STATUS_ROOT_RC=$?
+	set -e
+
+	if [[ "$STATUS_ROOT_RC" -eq 0 ]]; then
+		edge_result "Phase 9d.1: status as root -> exit 0" PASS
+	else
+		edge_result "Phase 9d.1: status as root -> exit 0" FAIL
+	fi
+
+	if [[ "$STATUS_ROOT_OUT" == *"Service"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]]; then
+		edge_result "Phase 9d.2: status output contains Service field" PASS
+	else
+		edge_result "Phase 9d.2: status output contains Service field" FAIL
+	fi
+
+	if [[ "$STATUS_ROOT_OUT" == *"Mode"* ]] && [[ "$STATUS_ROOT_OUT" == *":"* ]]; then
+		edge_result "Phase 9d.4: status output contains Mode field" PASS
+	else
+		edge_result "Phase 9d.4: status output contains Mode field" FAIL
+	fi
+
+	# Count occurrences of "inactive" in status output
+	INACTIVE_COUNT=$(printf '%s\n' "$STATUS_ROOT_OUT" | grep -c "inactive" || true)
+	if [[ "$INACTIVE_COUNT" -le 1 ]]; then
+		edge_result "Phase 9d.3: no duplicate inactive in status output" PASS
+	else
+		edge_result "Phase 9d.3: no duplicate inactive in status output" FAIL
+	fi
+
+fi # end of PHASE9_BLOCKED guard
 
 # ==============================================================================
 # 10. Lifecycle Startup Benchmark

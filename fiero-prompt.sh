@@ -38,12 +38,18 @@ watch_events() {
     mkdir -p "$(dirname "$event_file")" 2>/dev/null || true
     touch "$event_file" 2>/dev/null || true
 
-    # ponytail: if the D-Bus socket vanishes mid-run, only the reader exits;
-    # tail lingers until the next event's SIGPIPE closes it.
-    tail -n0 -F "$event_file" 8>&- 2>/dev/null | while IFS='|' read -r state msg _; do
+    # tail runs as a coprocess rather than the left side of a pipeline so the
+    # reader can kill it. With `tail | while`, a vanished D-Bus socket only
+    # ends the reader: tail keeps blocking on the (idle) event file, this
+    # shell stays in the pipeline wait holding fd 8, and the flock is never
+    # released - so no new watcher can ever start.
+    coproc TAILER { tail -n0 -F "$event_file" 2>/dev/null; }
+    local tail_pid="$TAILER_PID"
+
+    while IFS='|' read -r state msg _; do
         [ -n "$state" ] || continue
         if [ ! -S "${USER_BUS:-}" ]; then
-            exit 0
+            break
         fi
         urgency="normal"
         case "$state" in
@@ -53,7 +59,14 @@ watch_events() {
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" \
             --icon=network-wireless \
             --urgency="$urgency" 2>/dev/null || true
-    done
+    done <&"${TAILER[0]}"
+
+    # Single teardown for both exit paths (EOF, or bus loss via break).
+    # Waiting here rather than inside the loop matters: reaping a coproc
+    # unsets $TAILER, and referencing ${TAILER[0]} afterwards is a fatal
+    # unbound-variable error under `set -u`.
+    kill "$tail_pid" 2>/dev/null
+    wait "$tail_pid" 2>/dev/null
 }
 
 if [ "${1:-}" = "watch" ]; then

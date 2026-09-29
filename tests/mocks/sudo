@@ -1,4 +1,9 @@
 #!/bin/bash
-# Test double for sudo: records what would have been run.
+# Test double for sudo: records what would have been run. With
+# /tmp/mock-state/sudo-fails present it exits non-zero, to exercise the
+# permission-denied notification path.
 echo "sudo $*" >>/tmp/mock-state/sudo
+if [ -f /tmp/mock-state/sudo-fails ]; then
+    exit 1
+fi
 exit 0
