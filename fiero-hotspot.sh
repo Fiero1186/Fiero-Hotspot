@@ -63,7 +63,7 @@ get_channel() {
     local line
     line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
     [ -n "$line" ] || return 1
-    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
+    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9][0-9][0-9][0-9](\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
     [ -n "$FREQ" ] || return 1
     CH=$(freq_to_channel "$FREQ")
     [ -n "$CH" ]
@@ -73,7 +73,7 @@ refresh_supported_channels() {
     local phy fresh=""
     phy=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2; exit}')
     if [ -n "$phy" ]; then
-        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -viE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
     fi
     if [ -n "$fresh" ]; then
         SUPPORTED_CHANNELS="$fresh"
@@ -123,7 +123,7 @@ set_state() {
 # for any user, even before create_ap is installed.
 load_config() {
     local cmd conf_owner conf_perms
-    for cmd in iw pgrep pkill create_ap; do
+    for cmd in iw pgrep pkill create_ap flock ip systemctl stat cut sed awk; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             log "ERR" "Required command not found: $cmd. Run install.sh first."
             exit 1
@@ -163,6 +163,7 @@ ac_online() {
         return 0
     fi
     local supply
+    shopt -s nullglob
     for supply in /sys/class/power_supply/*; do
         if [ -f "$supply/type" ] && grep -qE "^(Mains|USB)$" "$supply/type" &&
             [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
@@ -188,7 +189,7 @@ read_state() {
 
 is_create_ap_pid() {
     [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
-    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -q 'create_ap'
+    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)create_ap( |$)'
 }
 
 current_pid() {
@@ -442,7 +443,7 @@ start_hotspot() {
 
     local escaped_if
     escaped_if=$(escape_regex "$INTERFACE")
-    if pgrep -f "create_ap.*$escaped_if" >/dev/null; then
+    if pgrep -f "create_ap.*[[:space:]]${escaped_if}([[:space:]]|$)" >/dev/null; then
         log "WARN" "create_ap is already running on $INTERFACE (started outside Fiero?). Not touching it."
         log "WARN" "Stop it first, e.g.: sudo create_ap --stop $INTERFACE"
         set_state "ERROR" "Hotspot not started: another hotspot is already running on $INTERFACE"
@@ -643,6 +644,7 @@ clients_hotspot() {
         if [[ "$line" =~ $station_re ]]; then
             current_mac="${BASH_REMATCH[1]}"
         elif [[ "$line" =~ $signal_re ]]; then
+            [ -n "$current_mac" ] || continue
             local signal="${BASH_REMATCH[1]}"
             local ip="${mac_to_ip[$current_mac]:--}"
             local host="${mac_to_host[$current_mac]:--}"

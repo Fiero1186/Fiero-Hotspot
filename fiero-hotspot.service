@@ -10,7 +10,7 @@ StandardOutput=journal
 StandardError=journal
 ExecStart=/usr/local/bin/fiero-hotspot start
 ExecStop=/usr/local/bin/fiero-hotspot stop
-TimeoutStopSec=30s
+TimeoutStopSec=60s
 Restart=no
 
 # /run/fiero-hotspot (mode 0755) holds the create_ap config file (with the
@@ -34,7 +34,7 @@ ProtectHome=read-only
 # create_ap writes unmanaged-devices= into NetworkManager.conf so that
 # NetworkManager leaves the virtual AP interface alone. The "-" prefix keeps
 # the unit working on systems without /etc/NetworkManager.
-ReadWritePaths=/run /var/log /proc/sys/net/ipv4 -/etc/NetworkManager
+ReadWritePaths=/run /var/log -/etc/NetworkManager
 RestrictNamespaces=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

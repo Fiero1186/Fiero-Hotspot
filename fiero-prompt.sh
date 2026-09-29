@@ -40,7 +40,7 @@ watch_events() {
 
     # ponytail: if the D-Bus socket vanishes mid-run, only the reader exits;
     # tail lingers until the next event's SIGPIPE closes it.
-    tail -n0 -F "$event_file" 2>/dev/null | while IFS='|' read -r state msg _; do
+    tail -n0 -F "$event_file" 8>&- 2>/dev/null | while IFS='|' read -r state msg _; do
         [ -n "$state" ] || continue
         if [ ! -S "${USER_BUS:-}" ]; then
             exit 0
@@ -97,7 +97,7 @@ get_channel() {
     local line
     line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
     [ -n "$line" ] || return 1
-    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
+    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9][0-9][0-9][0-9](\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
     [ -n "$FREQ" ] || return 1
     CH=$(freq_to_channel "$FREQ")
     [ -n "$CH" ]
@@ -107,7 +107,7 @@ refresh_supported_channels() {
     local phy fresh=""
     phy=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2; exit}')
     if [ -n "$phy" ]; then
-        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -viE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
     fi
     if [ -n "$fresh" ]; then
         SUPPORTED_CHANNELS="$fresh"
@@ -136,6 +136,7 @@ COOLDOWN=11
 
 ac_online() {
     local supply
+    shopt -s nullglob
     for supply in /sys/class/power_supply/*; do
         if [ -f "$supply/type" ] && grep -qE "^(Mains|USB)$" "$supply/type" &&
             [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
