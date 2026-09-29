@@ -72,6 +72,10 @@ watch_events() {
 if [ "${1:-}" = "watch" ]; then
     USER_BUS="/run/user/$(id -u)/bus"
     [ -S "$USER_BUS" ] || exit 0
+    # udev -> systemd-run -> su hands us a stripped environment with no
+    # XDG_RUNTIME_DIR, so libnotify cannot fall back to $XDG_RUNTIME_DIR/bus.
+    # Set the address explicitly or every notification is dropped silently.
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_BUS"
     watch_events
     exit 0
 fi
@@ -151,6 +155,14 @@ STATE_FILE="/run/user/$(id -u)/fiero-prompt.state"
 COOLDOWN=11
 
 ac_online() {
+    # Mirror fiero-hotspot.sh: honour the configured supply first, then scan.
+    # Without this the two can disagree on multi-battery / USB-PD hardware and
+    # the prompt fires against a power state the daemon does not believe in.
+    if [ -n "${POWER_SUPPLY:-}" ] &&
+        [ -f "/sys/class/power_supply/$POWER_SUPPLY/online" ] &&
+        [ "$(cat "/sys/class/power_supply/$POWER_SUPPLY/online" 2>/dev/null)" = "1" ]; then
+        return 0
+    fi
     local supply
     shopt -s nullglob
     for supply in /sys/class/power_supply/*; do

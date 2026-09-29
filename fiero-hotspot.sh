@@ -289,7 +289,13 @@ snapshot_system_state() {
 restore_system_state() {
     [ -d "$SNAP_DIR" ] || return 0
     # Another hotspot owns NAT right now; restoring would break it.
-    if pgrep -f '(^|/)create_ap( |$)' >/dev/null; then
+    # Our own instance ($1) must be excluded: on the forced-teardown path we
+    # SIGKILL it moments earlier, and signal delivery is asynchronous, so it can
+    # still be visible to pgrep. Treating it as "another hotspot" would skip
+    # the whole rollback and leave ip_forward and the NAT rules installed.
+    local foreign_pids
+    foreign_pids=$(pgrep -f '(^|/)create_ap( |$)' 2>/dev/null | grep -vxF "${1:-}" || true)
+    if [ -n "$foreign_pids" ]; then
         log "WARN" "Another create_ap is running; skipping network rollback."
         return 0
     fi
@@ -484,7 +490,7 @@ stop_create_ap() {
     # create_ap restores ip_forward, iptables and NetworkManager itself on a
     # clean exit. Only take over when it did not get the chance, so our
     # wholesale iptables restore never overwrites a clean one.
-    [ "$clean" -eq 1 ] || restore_system_state
+    [ "$clean" -eq 1 ] || restore_system_state "$pid"
 
     if [ "$clean" -eq 0 ] && confdir_is_removable "$confdir"; then
         rm -rf -- "$confdir"
@@ -904,8 +910,9 @@ update_auto_prompt() {
     else
         echo "AUTO_PROMPT='${val}'" >>"$CONFIG_FILE"
     fi
-    chown root:"$TARGET_USER" "$CONFIG_FILE" 2>/dev/null || {
-        log "ERR" "Failed to set owner on $CONFIG_FILE to root:$TARGET_USER."
+    local target="${TARGET_USER:-${SUDO_USER:-root}}"
+    chown root:"$target" "$CONFIG_FILE" 2>/dev/null || {
+        log "ERR" "Failed to set owner on $CONFIG_FILE to root:$target."
         exit 1
     }
     chmod 640 "$CONFIG_FILE" 2>/dev/null || true
