@@ -69,12 +69,15 @@ fi
 USER_LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fiero-prompt.lock"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
-if [ -r "$CONFIG_FILE" ]; then
+if [ -f "$CONFIG_FILE" ]; then
     conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
     conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
     if [ "$conf_owner" = "root" ] && { [ "$conf_perms" = "640" ] || [ "$conf_perms" = "600" ]; }; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
+    else
+        echo "[WARN] Config file has unsafe permissions ($conf_perms, owner=$conf_owner). Refusing to source." >&2
+        exit 0
     fi
 fi
 
@@ -126,7 +129,7 @@ export DBUS_SESSION_BUS_ADDRESS
 # translating daemon state events into desktop notifications (flock-guarded,
 # so only the first spawn wins). Fds 8/9 are closed so it never inherits a
 # held lock.
-setsid --fork bash "$0" watch >/dev/null 2>&1 <&- 3>&- 8>&- 9>&- &
+command -v setsid >/dev/null 2>&1 && setsid --fork bash "${BASH_SOURCE[0]}" watch >/dev/null 2>&1 <&- 3>&- 8>&- 9>&- &
 
 if [ "${AUTO_PROMPT:-true}" != "true" ]; then
     exit 0
@@ -160,7 +163,8 @@ exec 9>"$USER_LOCK"
 if ! flock -w 5 9; then
     exit 0
 fi
-now=$(date +%s)
+now=$(date +%s 2>/dev/null)
+[[ "${now:-}" =~ ^[0-9]+$ ]] || exit 0
 
 if [ -f "$STATE_FILE" ]; then
     old_ts=$(cut -d: -f1 "$STATE_FILE")
@@ -235,8 +239,12 @@ if [ "$current_state" = "online" ]; then
         --icon=network-wireless \
         --expire-time=10000 \
         --action="start=Start" \
-        --action="ignore=Ignore")
+        --action="ignore=Ignore" 2>/dev/null)
+    notify_rc=$?
     still_current || exit 0
+    if [ "$notify_rc" -ne 0 ] && [ -z "$result" ]; then
+        exit 0
+    fi
     # Explicit ignore -> exit. Timeout or dismissed -> start unless the user
     # opted out (AUTO_START_ON_TIMEOUT='false') and we are still on AC.
     if [ "$result" = "ignore" ]; then
@@ -250,7 +258,7 @@ if [ "$current_state" = "online" ]; then
     # The cable can be pulled while the prompt sits on screen; re-read the
     # power state now so a manual "Start" never brings the AP up on battery.
     ac_online || exit 0
-    sudo -n /usr/bin/systemctl start fiero-hotspot.service
+    sudo -n /usr/bin/systemctl start fiero-hotspot.service || /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Failed to start service: sudo permission denied" --icon=network-wireless --urgency=critical 2>/dev/null || true
 else
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC disconnected. Stop Fiero Hotspot?" \
         --icon=network-wireless \
@@ -269,7 +277,7 @@ else
             exit 0
         fi
     fi
-    sudo -n /usr/bin/systemctl stop fiero-hotspot.service
+    sudo -n /usr/bin/systemctl stop fiero-hotspot.service || /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Failed to stop service: sudo permission denied" --icon=network-wireless --urgency=critical 2>/dev/null || true
 fi
 
 # END OF FILE

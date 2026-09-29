@@ -107,11 +107,15 @@ set_state() {
 
     # 1. Atomic state snapshot for CLI / inspection
     tmp="$RUN_DIR/.state.tmp.$$"
-    {
+    if {
         printf 'STATE="%s"\nMSG="%s"\nCHANNEL="%s"\nTIMESTAMP="%s"\n' \
             "$state" "$msg" "${CHANNEL:-}" "$ts"
-    } >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null
-    mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp"
+    } >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp"
+    else
+        rm -f "$tmp"
+        log "ERR" "Failed to write state snapshot to $tmp."
+    fi
 
     # 2. Append to the event stream (tail -F watchers wake on write)
     printf '%s|%s|%s|%s\n' "$state" "$msg" "${CHANNEL:-}" "$ts" >>"$EVENTS_FILE" 2>/dev/null || true
@@ -189,6 +193,8 @@ read_state() {
 
 is_create_ap_pid() {
     [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+    [ -d "/proc/$1" ] || return 1
+    [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != "Z" ] || return 1
     tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)create_ap( |$)'
 }
 
@@ -255,6 +261,8 @@ launch_create_ap() {
     fi
     CREATE_AP_PID=$!
     printf '%s\n' "$CREATE_AP_PID" >"$PID_FILE"
+    sleep 0.2
+    confdir=$(find_confdir "$CREATE_AP_PID") && [ -n "$confdir" ] && printf '%s\n' "$confdir" >"$CONFDIR_FILE"
 }
 
 # Wait until our create_ap has a running hostapd and an AP interface.
@@ -365,6 +373,7 @@ monitor_hotspot() {
             else
                 log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
                 set_state "ERROR" "Hotspot stopped: create_ap process exited"
+                return 1
             fi
             break
         fi
@@ -422,6 +431,26 @@ monitor_hotspot() {
     done
 }
 
+# Daemon exit path: this process owns both the create_ap child and the
+# $STOP_FLAG IPC file, so a normal exit tears down both.
+set_daemon_traps() {
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 0' TERM
+}
+
+# Stop-client exit path. This process initiates a teardown but owns none of
+# the daemon's state. $STOP_FLAG is daemon-owned IPC: it is created here but
+# read by the still-running monitor_hotspot() to tell a requested stop apart
+# from an unexpected crash. Running `cleanup` on exit would delete that flag
+# before the daemon could observe it.
+# No EXIT trap on purpose: stop_create_ap has already run synchronously on
+# the normal path, so only abnormal signals need handling here.
+set_client_traps() {
+    trap 'stop_create_ap; exit 130' INT
+    trap 'stop_create_ap; exit 0' TERM
+}
+
 start_hotspot() {
     if [ "$EUID" -ne 0 ]; then
         log "ERR" "Starting the hotspot requires root. Run: sudo fiero-hotspot start"
@@ -454,9 +483,7 @@ start_hotspot() {
     rm -f "$STOP_FLAG"
 
     # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
-    trap cleanup EXIT
-    trap 'exit 130' INT
-    trap 'exit 0' TERM
+    set_daemon_traps
 
     log "INFO" "Starting hotspot process..."
 
@@ -493,7 +520,7 @@ start_hotspot() {
     set_state "LIVE" "Hotspot is live! SSID: $SSID"
 
     monitor_hotspot
-    exit 0
+    exit $?
 }
 
 stop_hotspot() {
@@ -501,6 +528,7 @@ stop_hotspot() {
         log "ERR" "Stopping the hotspot requires root. Run: sudo fiero-hotspot stop"
         exit 1
     fi
+    set_client_traps
     load_config
 
     # Run by hand while systemd owns the hotspot: let systemd stop it, so
@@ -508,7 +536,10 @@ stop_hotspot() {
     # started by systemd, including ExecStop=.)
     if [ -z "${INVOCATION_ID:-}" ] && systemctl is-active --quiet fiero-hotspot.service 2>/dev/null; then
         log "INFO" "Stopping fiero-hotspot.service..."
-        exec systemctl stop fiero-hotspot.service
+        if systemctl stop fiero-hotspot.service; then
+            exit 0
+        fi
+        log "WARN" "systemctl stop failed. Falling back to direct process teardown."
     fi
 
     ensure_run_dir
@@ -660,7 +691,10 @@ update_auto_prompt() {
     else
         echo "AUTO_PROMPT='${val}'" >>"$CONFIG_FILE"
     fi
-    chown root:"$TARGET_USER" "$CONFIG_FILE" 2>/dev/null || true
+    chown root:"$TARGET_USER" "$CONFIG_FILE" 2>/dev/null || {
+        log "ERR" "Failed to set owner on $CONFIG_FILE to root:$TARGET_USER."
+        exit 1
+    }
     chmod 640 "$CONFIG_FILE" 2>/dev/null || true
 }
 
