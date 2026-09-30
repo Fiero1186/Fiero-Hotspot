@@ -1,31 +1,73 @@
 # /etc/fiero-hotspot.conf
 # Configuration file for Fiero Hotspot daemon
+#
+# Ownership: root:<TARGET_USER>, mode 640. Both fiero-hotspot (as root) and
+# fiero-prompt (as <TARGET_USER>, via the group bit) refuse to source this file
+# unless it is root-owned with mode exactly 640 or 600.
+#
+# The "read by" lines below matter: the root daemon and the unprivileged
+# prompt script deliberately read DIFFERENT subsets. Do not assume a key here is
+# read by both.
 
 # Wi-Fi Access Point Credentials
 # IMPORTANT: Use single quotes to prevent shell injection if values contain $, `, or \
+# read by: fiero-hotspot (required)
 SSID='YOUR_SSID_HERE'
+# read by: fiero-hotspot (required)
 PASSWORD='YOUR_PASSWORD_HERE'
 
 # Physical wireless interface (check with: ip link or iw dev)
+# read by: fiero-hotspot (required), fiero-prompt
 INTERFACE='wlan0'
 
 # AC power supply device name under /sys/class/power_supply/ (e.g. AC0, AC, ADP1)
+# If left empty, fiero-hotspot scans /sys/class/power_supply/* for a supply whose
+# type is Mains or USB and whose online attribute is 1.
+# read by: fiero-hotspot, fiero-prompt
 POWER_SUPPLY='AC0'
 
-# Comma-separated list of non-DFS channels supported by your PHY (auto-detected by install.sh)
+# Comma-separated list of non-DFS channels supported by your PHY.
+# NOTE: this value is re-derived from `iw phy` output on every `start`, so the
+# value below is only a fallback for when that probe returns nothing.
+# read by: fiero-hotspot, fiero-prompt
 SUPPORTED_CHANNELS='1,2,3,4,5,6,7,8,9,10,11,36,40,44,48'
 
-# Target desktop user for D-Bus notification routing
+# Target desktop user. Owns this file's group bit (mode 640) and is the subject
+# of the sudoers drop-in. fiero-prompt resolves its own uid via `id -u` and does
+# NOT read this; the daemon reads it only to chown this file.
+# read by: fiero-hotspot (chown only), install.sh
 TARGET_USER='username'
+# UID of TARGET_USER. Reference/installer metadata only: no installed program
+# reads it. Kept for the test harness and for humans reading this file.
+# read by: install.sh only
 TARGET_UID='1000'
 
 # Automatic prompt behavior ('true' for D-Bus notification prompt on AC, 'false' for CLI-only control)
+# NOTE: `fiero-hotspot mode auto|manual` rewrites this key in place.
+# read by: fiero-hotspot (read + write), fiero-prompt
 AUTO_PROMPT='true'
 
 # If nobody answers the "Start?" prompt on plug-in: 'true' starts the hotspot
 # anyway, 'false' (default) does nothing and waits for a clear yes.
+# read by: fiero-prompt
 AUTO_START_ON_TIMEOUT='true'
 
 # If nobody answers the "Stop?" prompt on unplug: 'true' stops the hotspot
 # (the safe choice on battery), 'false' leaves it running. Default 'true'.
+# read by: fiero-prompt
 AUTO_STOP_ON_TIMEOUT='true'
+
+# ---------------------------------------------------------------------------
+# Environment-only tunables
+#
+# These are NOT config keys - the daemon reads them from the environment, with
+# the defaults shown. Export them in a systemd drop-in for
+# /etc/systemd/system/fiero-hotspot.service.d/override.conf, not here.
+#
+#   UPSTREAM_GRACE   (15)  seconds to hold the AP up after upstream loss
+#   UPSTREAM_RETRIES (3)   backoff windows before giving up
+#   UPSTREAM_BACKOFF (10)  first backoff window, in seconds (doubles each retry)
+#
+# With the defaults the daemon tolerates roughly 15 + 10 + 20 + 40 = 85 seconds
+# of upstream loss before tearing the hotspot down.
+# ---------------------------------------------------------------------------
