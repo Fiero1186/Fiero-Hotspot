@@ -1108,12 +1108,27 @@ if [[ "${PHASE9_BLOCKED:-0}" -eq 0 ]]; then
 	# read-only subcommand leaves daemon state untouched, and - crucially - that
 	# the measurement is sensitive enough to notice when state does change.
 	run_dir_fingerprint() {
-		find /run/fiero-hotspot -maxdepth 2 2>/dev/null | sort
+		# Phase 9c runs before anything creates /run/fiero-hotspot (that is
+		# Phase 10's job), so `find` legitimately fails on a missing directory.
+		# Under `set -o pipefail` that non-zero status survives `sort` and
+		# aborted the whole harness here via set -e. An empty fingerprint is
+		# the correct answer for "no daemon state exists", so swallow it.
+		#
+		# Size and mtime are part of the fingerprint, not just the names.
+		# `stop` creates nothing new once the directory exists: it rewrites
+		# `state` and appends a line to `events`. A name-only list compared
+		# equal, so the 9c.2 positive control failed on every run after the
+		# first - the test was poisoning its own next-run baseline.
+		find /run/fiero-hotspot -maxdepth 2 -printf '%p %s %T@\n' 2>/dev/null | sort || true
 	}
 
 	FINGERPRINT_BEFORE=$(run_dir_fingerprint)
 	for _sub in help bogus status clients version mode; do
-		"$SCRIPT_UNDER_TEST" "$_sub" >/dev/null 2>&1 || true
+		# </dev/null: bare `mode` prompts interactively (read -rp in
+		# mode_hotspot) and would block forever on the harness's inherited
+		# stdin. EOF makes read fail -> "No change." -> still read-only,
+		# which is what 9c.1 needs.
+		"$SCRIPT_UNDER_TEST" "$_sub" >/dev/null 2>&1 </dev/null || true
 	done
 	if [[ "$(run_dir_fingerprint)" == "$FINGERPRINT_BEFORE" ]]; then
 		edge_result "Phase 9c.1: read-only subcommands leave /run/fiero-hotspot untouched" PASS
