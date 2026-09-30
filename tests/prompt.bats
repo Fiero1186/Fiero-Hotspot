@@ -27,7 +27,95 @@ setup() {
     write_config
 }
 
+# Every non-watch invocation spawns a detached `fiero-prompt watch` (the
+# notifier), and reset_state does not clear the watcher lock. Without this,
+# one test's watcher tails the next test's synthetic events and double-counts
+# notifications.
+teardown() {
+    stop_watcher
+    kill_doubles
+    rm -f /run/user/0/fiero-prompt.watch.lock
+}
+
 plug() { echo "$1" >"$AC/online"; }
+
+# --- event watcher (fiero-prompt.sh watch) ---
+EVENTS=/run/fiero-hotspot/events
+
+# start_watcher [socket]: launch `fiero-prompt watch` detached and wait for it
+# to take the flock. The optional socket is created when missing.
+start_watcher() {
+    local sock="${1:-/run/user/0/bus}"
+    [ -S "$sock" ] || perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die $!' "$sock"
+    rm -f /run/user/0/fiero-prompt.watch.lock
+    : >"$M/notify"
+    "$PROMPT" watch >"$M/watch.log" 2>&1 3>&- &
+    echo $! >"$M/watch.pid"
+    sleep 0.6
+}
+
+stop_watcher() {
+    local pid
+    pid=$(cat "$M/watch.pid" 2>/dev/null) || return 0
+    kill "$pid" 2>/dev/null || true
+    rm -f "$M/watch.pid"
+}
+
+# emit <STATE> <MSG>: append one record in the daemon's pipe-delimited format
+emit() { printf '%s|%s|6|1700000000\n' "$1" "$2" >>"$EVENTS"; }
+
+@test "the watcher maps ERROR and DISCONNECTED to critical urgency" {
+    start_watcher
+    emit ERROR "boom happened"
+    emit DISCONNECTED "link is gone"
+    wait_for_log "boom happened" "$M/notify" 10
+    wait_for_log "link is gone" "$M/notify" 10
+    grep -q "^notify .*boom happened.*--urgency=critical" "$M/notify"
+    grep -q "^notify .*link is gone.*--urgency=critical" "$M/notify"
+}
+
+@test "the watcher maps STARTING and CHANNEL_DRIFT to low urgency" {
+    start_watcher
+    emit STARTING "booting up"
+    emit CHANNEL_DRIFT "moving to 11"
+    wait_for_log "booting up" "$M/notify" 10
+    wait_for_log "moving to 11" "$M/notify" 10
+    grep -q "^notify .*booting up.*--urgency=low" "$M/notify"
+    grep -q "^notify .*moving to 11.*--urgency=low" "$M/notify"
+}
+
+@test "a second watcher refuses to start while one holds the lock" {
+    start_watcher
+    "$PROMPT" watch
+    emit STARTING "only once"
+    wait_for_log "only once" "$M/notify" 10
+    sleep 1
+    [ "$(grep -c "only once" "$M/notify")" -eq 1 ]
+}
+
+@test "the watcher releases its lock when the session bus disappears" {
+    start_watcher
+    rm -f /run/user/0/bus
+    emit ERROR "bus went away"
+    for _ in $(seq 1 20); do
+        kill -0 "$(cat "$M/watch.pid")" 2>/dev/null || break
+        sleep 0.25
+    done
+    refute kill -0 "$(cat "$M/watch.pid")" 2>/dev/null
+    rm -f "$M/watch.pid"
+    # A fresh watcher must be able to take the lock and receive events again.
+    start_watcher
+    emit ERROR "back after the bus returned"
+    wait_for_log "back after the bus returned" "$M/notify" 10
+}
+
+@test "a denied elevation surfaces a critical notification" {
+    plug 1
+    touch "$M/sudo-fails"
+    "$PROMPT"
+    wait_for_log "sudo permission denied" "$M/notify" 10
+    grep -q -- "--urgency=critical" "$M/notify"
+}
 
 @test "plugged in and nobody answers: hotspot is started by default" {
     plug 1

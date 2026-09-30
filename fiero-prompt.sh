@@ -38,12 +38,18 @@ watch_events() {
     mkdir -p "$(dirname "$event_file")" 2>/dev/null || true
     touch "$event_file" 2>/dev/null || true
 
-    # ponytail: if the D-Bus socket vanishes mid-run, only the reader exits;
-    # tail lingers until the next event's SIGPIPE closes it.
-    tail -n0 -F "$event_file" 2>/dev/null | while IFS='|' read -r state msg _; do
+    # tail runs as a coprocess rather than the left side of a pipeline so the
+    # reader can kill it. With `tail | while`, a vanished D-Bus socket only
+    # ends the reader: tail keeps blocking on the (idle) event file, this
+    # shell stays in the pipeline wait holding fd 8, and the flock is never
+    # released - so no new watcher can ever start.
+    coproc TAILER { tail -n0 -F "$event_file" 2>/dev/null; }
+    local tail_pid="$TAILER_PID"
+
+    while IFS='|' read -r state msg _; do
         [ -n "$state" ] || continue
         if [ ! -S "${USER_BUS:-}" ]; then
-            exit 0
+            break
         fi
         urgency="normal"
         case "$state" in
@@ -53,12 +59,23 @@ watch_events() {
         /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "$msg" \
             --icon=network-wireless \
             --urgency="$urgency" 2>/dev/null || true
-    done
+    done <&"${TAILER[0]}"
+
+    # Single teardown for both exit paths (EOF, or bus loss via break).
+    # Waiting here rather than inside the loop matters: reaping a coproc
+    # unsets $TAILER, and referencing ${TAILER[0]} afterwards is a fatal
+    # unbound-variable error under `set -u`.
+    kill "$tail_pid" 2>/dev/null
+    wait "$tail_pid" 2>/dev/null
 }
 
 if [ "${1:-}" = "watch" ]; then
     USER_BUS="/run/user/$(id -u)/bus"
     [ -S "$USER_BUS" ] || exit 0
+    # udev -> systemd-run -> su hands us a stripped environment with no
+    # XDG_RUNTIME_DIR, so libnotify cannot fall back to $XDG_RUNTIME_DIR/bus.
+    # Set the address explicitly or every notification is dropped silently.
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_BUS"
     watch_events
     exit 0
 fi
@@ -69,12 +86,15 @@ fi
 USER_LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fiero-prompt.lock"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
-if [ -r "$CONFIG_FILE" ]; then
+if [ -f "$CONFIG_FILE" ]; then
     conf_owner=$(stat -c '%U' "$CONFIG_FILE" 2>/dev/null)
     conf_perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null)
     if [ "$conf_owner" = "root" ] && { [ "$conf_perms" = "640" ] || [ "$conf_perms" = "600" ]; }; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
+    else
+        echo "[WARN] Config file has unsafe permissions ($conf_perms, owner=$conf_owner). Refusing to source." >&2
+        exit 0
     fi
 fi
 
@@ -97,7 +117,7 @@ get_channel() {
     local line
     line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
     [ -n "$line" ] || return 1
-    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
+    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9][0-9][0-9][0-9](\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
     [ -n "$FREQ" ] || return 1
     CH=$(freq_to_channel "$FREQ")
     [ -n "$CH" ]
@@ -107,7 +127,7 @@ refresh_supported_channels() {
     local phy fresh=""
     phy=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2; exit}')
     if [ -n "$phy" ]; then
-        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -viE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
     fi
     if [ -n "$fresh" ]; then
         SUPPORTED_CHANNELS="$fresh"
@@ -126,7 +146,7 @@ export DBUS_SESSION_BUS_ADDRESS
 # translating daemon state events into desktop notifications (flock-guarded,
 # so only the first spawn wins). Fds 8/9 are closed so it never inherits a
 # held lock.
-setsid --fork bash "$0" watch >/dev/null 2>&1 <&- 3>&- 8>&- 9>&- &
+command -v setsid >/dev/null 2>&1 && setsid --fork bash "${BASH_SOURCE[0]}" watch >/dev/null 2>&1 <&- 3>&- 8>&- 9>&- &
 
 if [ "${AUTO_PROMPT:-true}" != "true" ]; then
     exit 0
@@ -135,7 +155,16 @@ STATE_FILE="/run/user/$(id -u)/fiero-prompt.state"
 COOLDOWN=11
 
 ac_online() {
+    # Mirror fiero-hotspot.sh: honour the configured supply first, then scan.
+    # Without this the two can disagree on multi-battery / USB-PD hardware and
+    # the prompt fires against a power state the daemon does not believe in.
+    if [ -n "${POWER_SUPPLY:-}" ] &&
+        [ -f "/sys/class/power_supply/$POWER_SUPPLY/online" ] &&
+        [ "$(cat "/sys/class/power_supply/$POWER_SUPPLY/online" 2>/dev/null)" = "1" ]; then
+        return 0
+    fi
     local supply
+    shopt -s nullglob
     for supply in /sys/class/power_supply/*; do
         if [ -f "$supply/type" ] && grep -qE "^(Mains|USB)$" "$supply/type" &&
             [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
@@ -159,7 +188,8 @@ exec 9>"$USER_LOCK"
 if ! flock -w 5 9; then
     exit 0
 fi
-now=$(date +%s)
+now=$(date +%s 2>/dev/null)
+[[ "${now:-}" =~ ^[0-9]+$ ]] || exit 0
 
 if [ -f "$STATE_FILE" ]; then
     old_ts=$(cut -d: -f1 "$STATE_FILE")
@@ -234,8 +264,12 @@ if [ "$current_state" = "online" ]; then
         --icon=network-wireless \
         --expire-time=10000 \
         --action="start=Start" \
-        --action="ignore=Ignore")
+        --action="ignore=Ignore" 2>/dev/null)
+    notify_rc=$?
     still_current || exit 0
+    if [ "$notify_rc" -ne 0 ] && [ -z "$result" ]; then
+        exit 0
+    fi
     # Explicit ignore -> exit. Timeout or dismissed -> start unless the user
     # opted out (AUTO_START_ON_TIMEOUT='false') and we are still on AC.
     if [ "$result" = "ignore" ]; then
@@ -249,7 +283,7 @@ if [ "$current_state" = "online" ]; then
     # The cable can be pulled while the prompt sits on screen; re-read the
     # power state now so a manual "Start" never brings the AP up on battery.
     ac_online || exit 0
-    sudo -n /usr/bin/systemctl start fiero-hotspot.service
+    sudo -n /usr/bin/systemctl start fiero-hotspot.service || /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Failed to start service: sudo permission denied" --icon=network-wireless --urgency=critical 2>/dev/null || true
 else
     result=$(/usr/bin/notify-send -a "Fiero Hotspot" "AC disconnected. Stop Fiero Hotspot?" \
         --icon=network-wireless \
@@ -268,7 +302,7 @@ else
             exit 0
         fi
     fi
-    sudo -n /usr/bin/systemctl stop fiero-hotspot.service
+    sudo -n /usr/bin/systemctl stop fiero-hotspot.service || /usr/bin/notify-send -a "Fiero Hotspot" "Hotspot" "Failed to stop service: sudo permission denied" --icon=network-wireless --urgency=critical 2>/dev/null || true
 fi
 
 # END OF FILE

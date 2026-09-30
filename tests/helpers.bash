@@ -31,7 +31,7 @@ require_container() {
 
 install_mocks() {
     local m
-    for m in create_ap iw ip systemctl sudo udevadm; do
+    for m in create_ap iw ip systemctl sudo udevadm iptables-save iptables-restore; do
         install -m 755 "$REPO/tests/mocks/$m" "/usr/local/bin/$m"
     done
     for m in hostapd dnsmasq iptables; do

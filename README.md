@@ -1,6 +1,6 @@
 # Fiero-Hotspot
 
-![Version](https://img.shields.io/badge/version-v2.1.3-blue)
+![Version](https://img.shields.io/badge/version-v2.2.0-blue)
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 [![CI](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml/badge.svg)](https://github.com/Fiero1186/Fiero-Hotspot/actions/workflows/ci.yml)
 
@@ -79,6 +79,10 @@ The upstream Wi-Fi connection must be managed by NetworkManager. The daemon uses
 
 ## System Architecture
 
+This section covers the operational path. For the full state machine, the complete
+`/run/fiero-hotspot` file contract, the privilege boundary and the recovery paths, see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ### Lifecycle
 
 ```
@@ -95,11 +99,11 @@ udev event (AC online/offline)
                                       └─> notify-send (as the logged-in user)
 ```
 
-The udev rule fires on any `power_supply` `change` event where `ATTR{type}=="Mains"` and `ATTR{online}` is `1` (plugged) or `0` (unplugged). This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly. The first prompt run also spawns a detached, flock-serialized event watcher (`fiero-prompt watch`) that stays alive for the session. That watcher is a child of the transient unit, and `setsid` severs the session but **not** the cgroup, so the rule pins `KillMode=process`: the default `control-group` would SIGTERM the whole cgroup — watcher included — the moment `su` exits, silently dropping every `STARTING`/`LIVE` notification. The transient unit then lingers `inactive` for as long as the watcher runs.
+The udev rule fires on any `power_supply` `change` event where `ATTR{type}` is `Mains` or `USB`. It deliberately does **not** match on `ATTR{online}`: whether the charger is actually present is read at runtime from the supply's `online` attribute by `ac_online()`, so a single rule covers both edges of the transition. `USB` is included because USB-C Power Delivery chargers (UCSI) register as `type=USB` rather than `Mains`. This invokes `fiero-prompt.sh` as the logged-in user via `systemd-run` + `su` (so udev does not kill the long-running prompt), which presents a desktop notification action prompt and issues `sudo -n systemctl start|stop` accordingly. The first prompt run also spawns a detached, flock-serialized event watcher (`fiero-prompt watch`) that stays alive for the session. That watcher is a child of the transient unit, and `setsid` severs the session but **not** the cgroup, so the rule pins `KillMode=process`: the default `control-group` would SIGTERM the whole cgroup — watcher included — the moment `su` exits, silently dropping every `STARTING`/`LIVE` notification. The transient unit then lingers `inactive` for as long as the watcher runs.
 
 ### Signal Handling
 
-Fiero-Hotspot only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0755`, created by systemd's `RuntimeDirectory=`; world-readable so the unprivileged event watcher can read the IPC files): the `create_ap` PID, the `create_ap` config directory, the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`), the atomic state snapshot (`state`), and the append-only event stream (`events`). The temporary `create_ap.conf` holding the WPA passphrase stays protected by its own mode `0600` — the readable directory is not a secret leak.
+Fiero-Hotspot only manages the `create_ap` instance it started. Its state lives in `/run/fiero-hotspot/` (mode `0755`, created by systemd's `RuntimeDirectory=`; world-readable so the unprivileged event watcher can read the IPC files): the `create_ap` PID, the `create_ap` config directory, the AP interface `create_ap` actually uses (`ap0`, or the physical card when `create_ap` falls back to `--no-virt`), the atomic state snapshot (`state`), the append-only event stream (`events`), the manual-stop flag (`stopping`), and a `snapshot/` subdirectory (mode `0700`) holding the saved `ip_forward`, iptables and NetworkManager state used to roll the system back on teardown. The temporary `create_ap.conf` holding the WPA passphrase stays protected by its own mode `0600` — the readable directory is not a secret leak. Full per-file contract in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 `fiero-hotspot.sh start` traps `EXIT`, `INT`, and `TERM`. Stopping (by the trap, by `fiero-hotspot stop`, or on a channel change):
 
@@ -109,6 +113,31 @@ Fiero-Hotspot only manages the `create_ap` instance it started. Its state lives 
 4. Deliberately skips deleting `p2p-dev-<interface>` to prevent iwlwifi firmware crashes.
 
 Hotspots started by other tools (for example the linux-wifi-hotspot GUI) are left alone: if a `create_ap` is already running on the interface, `start` exits with a message instead of killing it. Running `sudo fiero-hotspot stop` by hand while the systemd service is active simply runs `systemctl stop fiero-hotspot.service`.
+
+### Upstream Loss & Backoff
+
+When upstream Wi-Fi drops, the daemon does not tear down immediately — a brief
+roam is common and killing the AP for it would be worse than the outage. It
+holds a **15 second grace window** first, then retries with **exponential
+backoff: 10s, 20s, 40s** across 3 retry windows. Worst case, the AP survives a
+disconnect of roughly **85 seconds** (15 + 10 + 20 + 40) before giving up, at
+which point it writes `DISCONNECTED`, exits `75`, and does **not** auto-restart
+(`RestartPreventExitStatus=75`). Poll cadence is 1s while healthy, 2s during
+backoff. If the Wi-Fi **device itself** disappears from `nl80211`, that is a
+hardware failure rather than a roam and gets a single 5 second re-confirm
+before the same `DISCONNECTED` / exit `75` verdict — no backoff ladder.
+
+A *crash* of `create_ap` is treated differently: it exits `1`, and systemd
+restarts the unit (`Restart=on-failure`, `RestartSec=10`, bounded by
+`StartLimitBurst=3` in 300 seconds) because a crash is worth another try.
+
+### Instance Locking
+
+Two independent `flock` locks serialise the two long-running components: the
+daemon takes `flock -n 9` on `/run/fiero-hotspot.lock` for its whole lifetime,
+and the watcher takes `flock -n 8` on `$XDG_RUNTIME_DIR/fiero-prompt.watch.lock`.
+Both are non-blocking, so a duplicate invocation exits `0` immediately. Details
+in [SECURITY.md](SECURITY.md).
 
 ### IPC & Prompts
 
@@ -148,8 +177,8 @@ File: `/etc/fiero-hotspot.conf`
 | `INTERFACE` | Physical Wi-Fi interface (e.g. `wlan0`) |
 | `POWER_SUPPLY` | AC power supply name from `/sys/class/power_supply/` |
 | `SUPPORTED_CHANNELS` | Comma-separated channel whitelist (auto-detected at install) |
-| `TARGET_USER` | User for notification routing |
-| `TARGET_UID` | UID of `TARGET_USER` |
+| `TARGET_USER` | Desktop user. Owns the config's group bit (`640 root:<user>`) and is the subject of the sudoers drop-in. The daemon reads it **only** to `chown` the config file; `fiero-prompt` resolves its own uid via `$(id -u)` and never reads it. |
+| `TARGET_UID` | UID of `TARGET_USER`, written by the installer. **Reference metadata only** - no installed program reads it. |
 | `AUTO_PROMPT` | `true` for automatic D-Bus prompt on AC events, `false` for CLI-only control |
 | `AUTO_START_ON_TIMEOUT` | `true` to start the hotspot when the "Start?" prompt is not answered; default `true` |
 | `AUTO_STOP_ON_TIMEOUT` | `true` to stop the hotspot when the "Stop?" prompt is not answered; default `true` |
@@ -176,10 +205,15 @@ sudo fiero-hotspot start          # Start the hotspot daemon
 sudo fiero-hotspot stop           # Stop the hotspot daemon
 sudo fiero-hotspot status         # Show daemon state, AP interface, SSID, channel, AC power, client count
 sudo fiero-hotspot clients        # List connected devices (MAC, signal dBm, DHCP IP, hostname)
-sudo fiero-hotspot mode           # Toggle or set trigger mode (auto|manual)
+sudo fiero-hotspot mode           # Toggle or set trigger mode (auto|manual|on|off|enable|disable)
 fiero-hotspot version             # Show version (also: -v, --version) — no root required
 fiero-hotspot help                # Print usage menu (also: -h, --help, or no arguments)
 ```
+
+`mode` with no argument opens an interactive `[y/N]` prompt and toggles the
+current mode. `auto`, `enable` and `on` all mean the same thing; `manual`,
+`disable` and `off` all mean the other. `toggle` is an undocumented alias for
+`mode`. An unrecognised argument exits `1` with an `[ERR]` line on **stderr**.
 
 **`status` output example:**
 
@@ -320,7 +354,7 @@ The AP channel is inherited from the upstream connection's current channel and c
 
 ### Upstream Channel Drift Recovery
 
-When the upstream Wi-Fi connection changes channel (e.g., due to roaming or AP steering), the daemon detects the drift via periodic `iw dev $INTERFACE info` polling (every 2 seconds) and restarts the AP on the new channel within an 8-second re-initialization window. The AP is cleaned up and relaunched with the updated channel via `create_ap`.
+When the upstream Wi-Fi connection changes channel (e.g., due to roaming or AP steering), the daemon detects the drift via `iw dev $INTERFACE info` polling - 1 second while the link is healthy, since the 2 second cadence applies only during upstream-loss backoff. Recovery tears the AP down first (up to 15 seconds for a clean `create_ap` exit) and then allows 8 seconds for the relaunch, so a **worst-case switch can take ~23 seconds**. The upstream channel is re-read *after* teardown, because the link may have moved again while the AP was shutting down.
 
 This recovery is **best-effort and structurally verified**: single-channel-lock hardware (`#channels <= 1`) cannot retune across bands (e.g., 5 GHz → 2.4 GHz). If the new channel falls outside `SUPPORTED_CHANNELS`, the daemon logs the event, notifies the user, and terminates safely rather than attempting an impossible retune.
 

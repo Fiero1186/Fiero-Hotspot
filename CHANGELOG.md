@@ -6,6 +6,103 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-30
+
+### Added
+- **Upstream link state is now classified before acting.** `monitor_hotspot`
+  distinguishes a `gone` interface (device removed from `nl80211`) from a
+  `down` one (a roam or a dropped association). A vanished device gets a single
+  5s re-confirm instead of being treated as a transient disconnect, so a driver
+  or hardware event is no longer confused with ordinary Wi-Fi loss.
+- **Exponential backoff on upstream loss.** A dropped upstream connection is
+  now held through a 15s grace window and then retried at 10s, 20s and 40s
+  (3 windows) before the hotspot is torn down — roughly 85s of tolerance, up
+  from tearing down on the first missed poll. A successful re-association resets
+  the ladder.
+- **Pre-launch system-state snapshots.** `snapshot_system_state` records
+  `ip_forward`, the interface's `forwarding` flag, the full `iptables-save`
+  ruleset and the NetworkManager config into a `0700` `snapshot/` directory
+  before `create_ap` launches, and restores them on teardown. The snapshot is
+  taken once per daemon run, not per relaunch, so a drifted system can never
+  become its own rollback baseline.
+- **Parent-scoped process-tree teardown.** `descendant_pids` collects the
+  `create_ap` process tree breadth-first over `/proc` parent-child edges while
+  the parent is still alive, then reaps it with TERM/1s/KILL. Matching PIDs
+  rather than command lines means a `hostapd` from another instance, or from
+  another mount namespace, can never be killed.
+- **Bounded crash recovery.** The service gained `Restart=on-failure`,
+  `RestartSec=10`, `RestartPreventExitStatus=75` and
+  `StartLimitIntervalSec=300`/`StartLimitBurst=3`. A crashed `create_ap` is
+  now retried; a dead upstream (exit 75) is not, and a persistent fault can no
+  longer loop indefinitely.
+- **New documentation: [ARCHITECTURE.md](ARCHITECTURE.md).** Component map, the
+  seven-state state machine, the complete `/run/fiero-hotspot` file contract,
+  the privilege boundary, and the drift/backoff recovery paths.
+
+### Changed
+- **PID validation hardened.** `is_create_ap_pid` now rejects zombies and
+  anchors its `create_ap` command-line match on both ends (`(^|/)create_ap( |$)`),
+  so PID reuse, a defunct child, and a process that merely mentions `create_ap`
+  can no longer be mistaken for the AP.
+- **Config validation is now a hard dependency check.** `load_config` verifies
+  `iw pgrep pkill create_ap flock ip systemctl stat cut sed awk` are present
+  before sourcing the config, and refuses to run against a config that is not
+  root-owned with mode exactly `640` or `600`.
+- **Channel-drift recovery re-reads the upstream after teardown.** The link can
+  move again during the up-to-15s AP shutdown, so the channel is sampled again
+  before relaunching. Worst-case drift recovery is therefore ~23s (15s teardown
+  + 8s `wait_for_ap`), not 8s.
+- **Instance lock descriptors are scoped to the parent.** Both `create_ap`
+  launch paths pass `9>&-`, and the watcher's `tail` coprocess is spawned with
+  `8>&-`, so a surviving child cannot keep the lock held and make every later
+  `start` falsely report "Another instance is running".
+- **`fiero-prompt watch` sets the D-Bus address explicitly.** It exports
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` instead of
+  relying on `dbus-launch` or `systemctl --user import-env`. The
+  `udev → systemd-run → su` chain hands over a stripped environment with no
+  `XDG_RUNTIME_DIR`, which previously caused every notification to be dropped
+  silently.
+- **The watcher now runs `tail -n0 -F` as a coprocess**, not as the left side
+  of a pipeline, so it can be killed on teardown. Previously a vanished D-Bus
+  socket left the reader blocked on the idle event file while holding fd 8, so
+  the `flock` was never released and no new watcher could ever start.
+- **`restore_system_state` no longer matches its own process.** A `pgrep -f`
+  self-match was fixed with an exact-PID exclusion (`grep -vxF`), so a running
+  harness or the daemon itself is never counted as a leaked child.
+- **Detection regexes are anchored and case-insensitive where appropriate.**
+  Frequency parsing uses explicit digit classes; channel filtering and
+  interface matching are anchored (`[[:space:]]$IF([[:space:]]|$)`) so
+  `wlan1` cannot match `wlan10`.
+- **`install.sh` guards against empty MACs** when building the client list, and
+  both scripts `shopt -s nullglob` so an absent power-supply glob cannot be
+  iterated literally.
+- **`TimeoutStopSec` raised to 60s** in the unit, matching the 15s `create_ap`
+  teardown plus the 2s force-kill plus descendant reaping.
+- **Documentation corrections.** The udev rule matches `Mains|USB` and never
+  matches on `ATTR{online}` — presence is read at runtime by `ac_online()`;
+  drift polling is 1s while healthy (2s only during backoff); `TARGET_USER` and
+  `TARGET_UID` consumer boundaries are now stated explicitly. See
+  [ARCHITECTURE.md](ARCHITECTURE.md) and [SECURITY.md](SECURITY.md).
+
+### Fixed
+- **`fiero-prompt`'s `ac_online()` now honours `POWER_SUPPLY`.** The configured
+  supply name was read but not actually used, so the configured value and the
+  auto-detected fallback could disagree.
+- **`${TARGET_USER:-...}` fallback applied** everywhere it is used, so an
+  unset `TARGET_USER` can no longer produce an unquoted `chown root:`.
+- **Phase 9c harness false failure and hang fixed.** The `/run/fiero-hotspot`
+  fingerprint was missing size and mtime, so `stop` — which creates no new
+  filenames on a repeat run — produced an identical fingerprint and the 9c.2
+  positive control failed on every run after the first. The fingerprint now
+  uses `find -printf '%p %s %T@\n'`, and a missing directory no longer aborts
+  the harness under `set -euo pipefail`. The read-only subcommand probe also
+  redirects stdin from `/dev/null`, since bare `mode` prompts interactively and
+  blocked forever on the harness's inherited stdin.
+- **Test coverage extended** across `test_harness.sh` and the bats suites:
+  new daemon, prompt and CLI coverage for the link-state classifier, the
+  snapshot/restore path, process-tree teardown, `is_create_ap_pid` rejection
+  cases, watcher bus-loss recovery, and the phase 9 CLI dispatcher.
+
 ## [2.1.3] - 2026-09-28
 
 ### Fixed

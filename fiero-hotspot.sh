@@ -19,7 +19,7 @@ set -u
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-VERSION="2.1.3"
+VERSION="2.2.0"
 
 CONFIG_FILE="/etc/fiero-hotspot.conf"
 LOCK_FILE="/run/fiero-hotspot.lock"
@@ -36,10 +36,24 @@ STOP_FLAG="$RUN_DIR/stopping"
 AP_CONF="$RUN_DIR/create_ap.conf"
 STATE_FILE="$RUN_DIR/state"
 EVENTS_FILE="$RUN_DIR/events"
+SNAP_DIR="$RUN_DIR/snapshot"
+SNAP_IPFORWARD="$SNAP_DIR/ip_forward"
+SNAP_IFACE_FWD="$SNAP_DIR/iface_forwarding"
+SNAP_IPTABLES="$SNAP_DIR/iptables.rules"
+SNAP_NM="$SNAP_DIR/nm.conf"
+SNAP_NM_ABSENT="$SNAP_DIR/nm.absent"
 
-UPSTREAM_GRACE=15
+UPSTREAM_GRACE="${UPSTREAM_GRACE:-15}"
+UPSTREAM_RETRIES="${UPSTREAM_RETRIES:-3}"
+UPSTREAM_BACKOFF="${UPSTREAM_BACKOFF:-10}"
+UPSTREAM_POLL=1
+UPSTREAM_RECHECK=2
+DEVICE_CONFIRM=5
 AP_START_TIMEOUT=8
 AP_STOP_TIMEOUT=15
+CONFDIR_TICKS=30
+EXIT_CRASH=1
+EXIT_UPSTREAM=75
 
 # --- Utility Functions ---
 escape_regex() {
@@ -63,7 +77,7 @@ get_channel() {
     local line
     line=$(iw dev "$1" info 2>/dev/null | grep -m1 'channel ')
     [ -n "$line" ] || return 1
-    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9]{4,5}(\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
+    FREQ=$(printf '%s\n' "$line" | awk '{for(i=1;i<NF;i++){v=$i; gsub(/[()]/,"",v); if (v ~ /^[0-9][0-9][0-9][0-9](\.[0-9])?$/ &&$(i+1) ~ /MHz/) {print v; exit}}}')
     [ -n "$FREQ" ] || return 1
     CH=$(freq_to_channel "$FREQ")
     [ -n "$CH" ]
@@ -73,7 +87,7 @@ refresh_supported_channels() {
     local phy fresh=""
     phy=$(iw dev "$INTERFACE" info 2>/dev/null | awk '/wiphy/{print "phy"$2; exit}')
     if [ -n "$phy" ]; then
-        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+        fresh=$(iw phy "$phy" info 2>/dev/null | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -viE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
     fi
     if [ -n "$fresh" ]; then
         SUPPORTED_CHANNELS="$fresh"
@@ -107,11 +121,15 @@ set_state() {
 
     # 1. Atomic state snapshot for CLI / inspection
     tmp="$RUN_DIR/.state.tmp.$$"
-    {
+    if {
         printf 'STATE="%s"\nMSG="%s"\nCHANNEL="%s"\nTIMESTAMP="%s"\n' \
             "$state" "$msg" "${CHANNEL:-}" "$ts"
-    } >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null
-    mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp"
+    } >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp"
+    else
+        rm -f "$tmp"
+        log "ERR" "Failed to write state snapshot to $tmp."
+    fi
 
     # 2. Append to the event stream (tail -F watchers wake on write)
     printf '%s|%s|%s|%s\n' "$state" "$msg" "${CHANNEL:-}" "$ts" >>"$EVENTS_FILE" 2>/dev/null || true
@@ -123,7 +141,7 @@ set_state() {
 # for any user, even before create_ap is installed.
 load_config() {
     local cmd conf_owner conf_perms
-    for cmd in iw pgrep pkill create_ap; do
+    for cmd in iw pgrep pkill create_ap flock ip systemctl stat cut sed awk; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             log "ERR" "Required command not found: $cmd. Run install.sh first."
             exit 1
@@ -163,6 +181,7 @@ ac_online() {
         return 0
     fi
     local supply
+    shopt -s nullglob
     for supply in /sys/class/power_supply/*; do
         if [ -f "$supply/type" ] && grep -qE "^(Mains|USB)$" "$supply/type" &&
             [ "$(cat "$supply/online" 2>/dev/null)" = "1" ]; then
@@ -188,7 +207,9 @@ read_state() {
 
 is_create_ap_pid() {
     [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
-    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -q 'create_ap'
+    [ -d "/proc/$1" ] || return 1
+    [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != "Z" ] || return 1
+    tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -qE '(^|/)create_ap( |$)'
 }
 
 current_pid() {
@@ -214,6 +235,152 @@ find_confdir() {
 
 is_confdir_path() {
     [[ "${1:-}" =~ ^/tmp/create_ap\.[A-Za-z0-9_.-]+\.conf\.[A-Za-z0-9]+$ ]]
+}
+
+# A confdir is ours to delete when it is already gone, or when no live
+# create_ap owns it. If a newer instance has taken the path over, its pid file
+# names a live create_ap and we refuse. A record left over from an earlier
+# generation therefore cannot redirect the rm -rf at a new instance.
+confdir_is_removable() {
+    local owner
+    is_confdir_path "${1:-}" || return 1
+    [ -d "$1" ] || return 0
+    owner=$(cat "$1/pid" 2>/dev/null) || return 1
+    is_create_ap_pid "$owner" && return 1
+    return 0
+}
+
+# --- Pre-launch state snapshot ---
+# Capture the network and NetworkManager baseline create_ap is about to
+# mutate, so a forced or crashed teardown can be rolled back exactly.
+# Best effort by design: a tool we cannot run must not stop the hotspot, it
+# only means that part of the baseline cannot be rolled back later.
+snapshot_system_state() {
+    ensure_run_dir
+    # Once per daemon run. On channel drift launch_create_ap runs again while
+    # the machine is already modified; re-snapshotting would capture the dirty
+    # state as the new baseline, so an existing snapshot is kept.
+    [ -d "$SNAP_DIR" ] && return 0
+    install -d -m 0700 "$SNAP_DIR" 2>/dev/null || return 0
+    (
+        umask 077
+        cat /proc/sys/net/ipv4/ip_forward >"$SNAP_IPFORWARD" 2>/dev/null
+        cat "/proc/sys/net/ipv4/conf/$INTERFACE/forwarding" >"$SNAP_IFACE_FWD" 2>/dev/null
+        if command -v iptables-save >/dev/null 2>&1; then
+            iptables-save >"$SNAP_IPTABLES" 2>/dev/null || rm -f "$SNAP_IPTABLES"
+        fi
+        if [ -f /etc/NetworkManager/NetworkManager.conf ]; then
+            cp -p /etc/NetworkManager/NetworkManager.conf "$SNAP_NM" 2>/dev/null ||
+                rm -f "$SNAP_NM"
+        else
+            : >"$SNAP_NM_ABSENT"
+        fi
+    )
+    # An empty capture is worse than none: it would roll back to a default.
+    [ -s "$SNAP_IPFORWARD" ] || rm -f "$SNAP_IPFORWARD"
+    [ -s "$SNAP_IFACE_FWD" ] || rm -f "$SNAP_IFACE_FWD"
+    [ -s "$SNAP_IPTABLES" ] || rm -f "$SNAP_IPTABLES"
+    log "INFO" "Captured pre-launch network baseline in $SNAP_DIR."
+}
+
+# Put the captured baseline back. Only called when create_ap did not get to
+# clean up after itself, so it never races create_ap's own restore. Each part
+# is independent: a missing file means "could not capture", not "reset it".
+restore_system_state() {
+    [ -d "$SNAP_DIR" ] || return 0
+    # Another hotspot owns NAT right now; restoring would break it.
+    # Our own instance ($1) must be excluded: on the forced-teardown path we
+    # SIGKILL it moments earlier, and signal delivery is asynchronous, so it can
+    # still be visible to pgrep. Treating it as "another hotspot" would skip
+    # the whole rollback and leave ip_forward and the NAT rules installed.
+    local foreign_pids
+    foreign_pids=$(pgrep -f '(^|/)create_ap( |$)' 2>/dev/null | grep -vxF "${1:-}" || true)
+    if [ -n "$foreign_pids" ]; then
+        log "WARN" "Another create_ap is running; skipping network rollback."
+        return 0
+    fi
+    if [ -s "$SNAP_IPFORWARD" ]; then
+        cat "$SNAP_IPFORWARD" >/proc/sys/net/ipv4/ip_forward 2>/dev/null ||
+            log "ERR" "Failed to restore net.ipv4.ip_forward."
+    fi
+    if [ -s "$SNAP_IFACE_FWD" ]; then
+        cat "$SNAP_IFACE_FWD" >"/proc/sys/net/ipv4/conf/$INTERFACE/forwarding" 2>/dev/null ||
+            log "ERR" "Failed to restore forwarding for $INTERFACE."
+    fi
+    # Integrity gate: never feed a truncated or foreign file to iptables-restore.
+    if [ -s "$SNAP_IPTABLES" ] && head -n1 "$SNAP_IPTABLES" 2>/dev/null | grep -q '^# Generated by'; then
+        if command -v iptables-restore >/dev/null 2>&1; then
+            iptables-restore <"$SNAP_IPTABLES" 2>/dev/null ||
+                log "ERR" "Failed to restore the iptables ruleset."
+        fi
+    fi
+    restore_nm_conf
+}
+
+# create_ap adds the interface to unmanaged-devices= in NetworkManager.conf.
+# Only rewrite the file when our interface is actually listed, so an unrelated
+# edit made while the hotspot was up is not clobbered.
+restore_nm_conf() {
+    local nm_conf="/etc/NetworkManager/NetworkManager.conf"
+    if [ -f "$SNAP_NM_ABSENT" ]; then
+        if grep -q "$INTERFACE" "$nm_conf" 2>/dev/null; then
+            rm -f "$nm_conf"
+        fi
+        return 0
+    fi
+    [ -f "$SNAP_NM" ] || return 0
+    grep -q "$INTERFACE" "$nm_conf" 2>/dev/null || return 0
+    cp -p "$SNAP_NM" "$nm_conf" 2>/dev/null ||
+        log "ERR" "Failed to restore $nm_conf."
+}
+
+discard_snapshot() {
+    rm -rf -- "$SNAP_DIR"
+}
+
+# PIDs of every descendant of $1, one per line, collected while $1 is still
+# alive: once the parent dies its children are reparented to init and are no
+# longer reachable by parent. Walking /proc instead of matching command lines
+# means this can only ever match processes in our own tree and namespace, so
+# it cannot reach a hostapd belonging to another instance or another mount
+# namespace.
+descendant_pids() {
+    local -a queue next kids
+    local p
+    [ -n "${1:-}" ] || return 0
+    queue=("$1")
+    while [ "${#queue[@]}" -gt 0 ]; do
+        next=()
+        for p in "${queue[@]}"; do
+            mapfile -t kids < <(pgrep -P "$p" 2>/dev/null)
+            [ "${#kids[@]}" -gt 0 ] && next+=("${kids[@]}")
+        done
+        [ "${#next[@]}" -gt 0 ] || break
+        printf '%s\n' "${next[@]}"
+        queue=("${next[@]}")
+    done
+    return 0
+}
+
+# Terminate a captured descendant list. On a clean exit create_ap already
+# reaped them, so the liveness probe keeps the common path at zero added
+# latency.
+kill_descendants() {
+    local p killed=0
+    [ -n "${1:-}" ] || return 0
+    while read -r p; do
+        [ -n "$p" ] || continue
+        if kill -0 "$p" 2>/dev/null; then
+            kill -TERM "$p" 2>/dev/null || true
+            killed=1
+        fi
+    done <<<"$1"
+    [ "$killed" -eq 1 ] || return 0
+    sleep 1
+    while read -r p; do
+        [ -n "$p" ] || continue
+        kill -KILL "$p" 2>/dev/null || true
+    done <<<"$1"
 }
 
 # create_ap parses --config files with a plain `read` (no -r): backslashes
@@ -243,9 +410,10 @@ write_create_ap_config() {
 }
 
 launch_create_ap() {
-    local ch="$1"
+    local ch="$1" confdir="" attempt
     ensure_run_dir
     rm -f "$CONFDIR_FILE" "$IFACE_FILE"
+    snapshot_system_state
     if write_create_ap_config "$ch"; then
         create_ap --config "$AP_CONF" 9>&- &
     else
@@ -254,6 +422,17 @@ launch_create_ap() {
     fi
     CREATE_AP_PID=$!
     printf '%s\n' "$CREATE_AP_PID" >"$PID_FILE"
+    # Record the confdir as soon as create_ap creates it, so a crash during
+    # startup still leaves a path to clean up. Bounded poll rather than a
+    # fixed sleep: on a loaded system the directory may not exist yet.
+    for ((attempt = 1; attempt <= CONFDIR_TICKS; attempt++)); do
+        confdir=$(find_confdir "$CREATE_AP_PID") || confdir=""
+        [ -n "$confdir" ] && break
+        kill -0 "$CREATE_AP_PID" 2>/dev/null || break
+        sleep 0.1
+    done
+    [ -n "$confdir" ] && printf '%s\n' "$confdir" >"$CONFDIR_FILE"
+    return 0
 }
 
 # Wait until our create_ap has a running hostapd and an AP interface.
@@ -279,53 +458,41 @@ wait_for_ap() {
     return 1
 }
 
-# create_ap saves the original forwarding values before enabling NAT and puts
-# them back in its own cleanup. If we had to kill it, do that for it - unless
-# another create_ap instance still needs forwarding.
-restore_ip_forward() {
-    local common="/tmp/create_ap.common.conf"
-    if pgrep -f '(^|/)create_ap( |$)' >/dev/null; then
-        return 0
-    fi
-    if [ -f "$common/ip_forward" ]; then
-        cat "$common/ip_forward" >/proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-        log "WARN" "Restored net.ipv4.ip_forward to $(cat "$common/ip_forward" 2>/dev/null)."
-    fi
-    if [ -f "$common/${INTERFACE}_forwarding" ]; then
-        cat "$common/${INTERFACE}_forwarding" >"/proc/sys/net/ipv4/conf/$INTERFACE/forwarding" 2>/dev/null || true
-    fi
-}
-
 # Ask our create_ap to stop and wait for it. create_ap's own cleanup restores
 # ip_forward, iptables and NetworkManager, so it must be allowed to finish
 # before anything else is removed.
 stop_create_ap() {
-    local pid ap_iface confdir forced=0 i
+    local pid ap_iface confdir clean=0 tree i
     pid=$(current_pid) || pid=""
     ap_iface=$(read_state "$IFACE_FILE")
     confdir=$(read_state "$CONFDIR_FILE")
 
     if [ -n "$pid" ]; then
+        # Collect our own tree while the parent is still alive; once it is gone
+        # its children are reparented and unreachable by parent.
+        tree=$(descendant_pids "$pid")
         # USR1 is create_ap's clean-exit signal (same as `create_ap --stop`)
         kill -USR1 "$pid" 2>/dev/null || true
         for ((i = 0; i < AP_STOP_TIMEOUT * 2; i++)); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.5
         done
+        kill -0 "$pid" 2>/dev/null || clean=1
         if kill -0 "$pid" 2>/dev/null; then
             log "WARN" "create_ap (pid $pid) did not exit within ${AP_STOP_TIMEOUT}s; forcing it."
             kill -TERM "$pid" 2>/dev/null || true
             sleep 2
             kill -KILL "$pid" 2>/dev/null || true
-            forced=1
         fi
+        kill_descendants "$tree"
     fi
 
-    if [ "$forced" -eq 1 ] && is_confdir_path "$confdir"; then
-        # hostapd and dnsmasq of *this* instance carry the confdir in their
-        # command line
-        pkill -f "$(escape_regex "$confdir")/" 2>/dev/null || true
-        restore_ip_forward
+    # create_ap restores ip_forward, iptables and NetworkManager itself on a
+    # clean exit. Only take over when it did not get the chance, so our
+    # wholesale iptables restore never overwrites a clean one.
+    [ "$clean" -eq 1 ] || restore_system_state "$pid"
+
+    if [ "$clean" -eq 0 ] && confdir_is_removable "$confdir"; then
         rm -rf -- "$confdir"
     fi
 
@@ -339,6 +506,7 @@ stop_create_ap() {
     fi
 
     CREATE_AP_PID=""
+    discard_snapshot
     rm -f "$PID_FILE" "$CONFDIR_FILE" "$IFACE_FILE" "$AP_CONF"
 }
 
@@ -351,30 +519,49 @@ detect_channel() {
     get_channel "$INTERFACE" && CHANNEL="$CH"
 }
 
+# Classify the upstream link. "gone" is not a disassociation: iw itself
+# failed, which means the interface is missing, renamed, or its driver died.
+# Waiting cannot bring an absent interface back, so it must not be treated
+# like a roam, and a single transient error must not be fatal either.
+LINK_STATE=""
+upstream_state() {
+    local out rc
+    out=$(iw dev "$INTERFACE" link 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        LINK_STATE="gone"
+    elif printf '%s' "$out" | grep -q "Connected to"; then
+        LINK_STATE="up"
+    else
+        LINK_STATE="down"
+    fi
+}
+
 # Watch the upstream link while the AP runs: follow channel changes, stop when
 # upstream is gone for good, stop when create_ap dies.
 monitor_hotspot() {
-    local last_channel="$CHANNEL" down_since="" poll_int=2
-    local now link_out link_rc current_ch
+    local last_channel="$CHANNEL" down_since="" next_check=0 retries=0
+    local backoff="$UPSTREAM_BACKOFF" poll_int=2 now current_ch
 
     while true; do
         if ! kill -0 "$CREATE_AP_PID" 2>/dev/null; then
             if [ -f "$STOP_FLAG" ]; then
                 log "INFO" "create_ap stopped on request."
-            else
-                log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
-                set_state "ERROR" "Hotspot stopped: create_ap process exited"
+                return 0
             fi
-            break
+            log "ERR" "create_ap process exited unexpectedly. Shutting down hotspot."
+            set_state "ERROR" "Hotspot stopped: create_ap process exited"
+            return "$EXIT_CRASH"
         fi
 
         now=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
-        link_out=$(iw dev "$INTERFACE" link 2>/dev/null)
-        link_rc=$?
+        upstream_state
 
-        if [ "$link_rc" -eq 0 ] && printf '%s' "$link_out" | grep -q "Connected to"; then
+        if [ "$LINK_STATE" = "up" ]; then
             down_since=""
-            poll_int=2
+            retries=0
+            next_check=0
+            backoff="$UPSTREAM_BACKOFF"
 
             current_ch=""
             if get_channel "$INTERFACE"; then current_ch="$CH"; fi
@@ -383,42 +570,101 @@ monitor_hotspot() {
                 if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
                     log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
                     set_state "CHANNEL_UNSUPPORTED" "Hotspot stopped: channel $current_ch unsupported"
-                    break
+                    return 0
                 fi
 
                 set_state "CHANNEL_DRIFT" "Hotspot restarting: channel changed to $current_ch"
                 stop_create_ap
+
+                # stop_create_ap can take AP_STOP_TIMEOUT seconds. The upstream
+                # may have dropped or moved again in that window, so re-read it
+                # instead of relaunching a create_ap against a dead or moved link.
+                if ! detect_channel; then
+                    log "INFO" "Upstream went away during the channel switch; not relaunching."
+                    set_state "DISCONNECTED" "Hotspot stopped: upstream Wi-Fi disconnected"
+                    return "$EXIT_UPSTREAM"
+                fi
+                if [ "$CHANNEL" != "$current_ch" ]; then
+                    log "WARN" "Upstream moved again ($current_ch -> $CHANNEL) during the switch."
+                    current_ch="$CHANNEL"
+                    if [[ ",$SUPPORTED_CHANNELS," != *",$current_ch,"* ]]; then
+                        log "ERR" "New channel $current_ch is unsupported for AP broadcast. Shutting down."
+                        set_state "CHANNEL_UNSUPPORTED" "Hotspot stopped: channel $current_ch unsupported"
+                        return 0
+                    fi
+                fi
+
                 CHANNEL="$current_ch"
                 last_channel="$current_ch"
-
                 launch_create_ap "$CHANNEL"
                 if ! wait_for_ap; then
                     log "ERR" "Failed to bring up AP on channel $CHANNEL within ${AP_START_TIMEOUT}s."
                     set_state "ERROR" "Hotspot stopped: AP re-init failed"
-                    break
+                    return "$EXIT_CRASH"
                 fi
                 log "INFO" "create_ap successfully restarted on channel $CHANNEL (pid $CREATE_AP_PID)."
                 set_state "LIVE" "Hotspot is live on channel $CHANNEL!"
             fi
+        elif [ "$LINK_STATE" = "gone" ]; then
+            # A failed iw call is a device-level problem. Re-check once so a
+            # single transient error is not fatal, then stop.
+            log "WARN" "iw failed on $INTERFACE. Re-checking in ${DEVICE_CONFIRM}s."
+            sleep "$DEVICE_CONFIRM"
+            upstream_state
+            if [ "$LINK_STATE" = "gone" ]; then
+                log "ERR" "Interface $INTERFACE is unusable (iw exits non-zero). Was it renamed or removed? Shutting down hotspot."
+                set_state "DISCONNECTED" "Hotspot stopped: interface $INTERFACE is gone"
+                return "$EXIT_UPSTREAM"
+            fi
+            log "INFO" "$INTERFACE responded again; continuing."
+            down_since=""
+            next_check=0
+            retries=0
         else
-            # "Not connected", or iw itself failed (driver reset, card removed)
-            poll_int=1
+            # Genuine disassociation: a roam or a dropped link. Hold the AP up
+            # through UPSTREAM_GRACE, then consume bounded backoff windows
+            # before tearing down. They are polled, not slept through, so a
+            # recovery is noticed within UPSTREAM_RECHECK.
             if [ -z "$down_since" ]; then
                 down_since="$now"
-            fi
-            if [ $((now - down_since)) -ge "$UPSTREAM_GRACE" ]; then
-                sleep 2
-                if ! iw dev "$INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
+                retries=0
+                next_check=$((now + UPSTREAM_GRACE))
+                poll_int="$UPSTREAM_POLL"
+            elif [ "$now" -ge "$next_check" ]; then
+                if [ "$retries" -ge "$UPSTREAM_RETRIES" ]; then
                     log "ERR" "Upstream Wi-Fi disconnected permanently. Shutting down hotspot."
                     set_state "DISCONNECTED" "Hotspot stopped: upstream Wi-Fi disconnected"
-                    break
+                    return "$EXIT_UPSTREAM"
                 fi
-                down_since=""
+                retries=$((retries + 1))
+                log "WARN" "Upstream still down; retry window $retries/$UPSTREAM_RETRIES for ${backoff}s."
+                next_check=$((now + backoff))
+                backoff=$((backoff * 2))
+                poll_int="$UPSTREAM_RECHECK"
             fi
         fi
-
         sleep "$poll_int"
     done
+}
+
+# Daemon exit path: this process owns both the create_ap child and the
+# $STOP_FLAG IPC file, so a normal exit tears down both.
+set_daemon_traps() {
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 0' TERM
+}
+
+# Stop-client exit path. This process initiates a teardown but owns none of
+# the daemon's state. $STOP_FLAG is daemon-owned IPC: it is created here but
+# read by the still-running monitor_hotspot() to tell a requested stop apart
+# from an unexpected crash. Running `cleanup` on exit would delete that flag
+# before the daemon could observe it.
+# No EXIT trap on purpose: stop_create_ap has already run synchronously on
+# the normal path, so only abnormal signals need handling here.
+set_client_traps() {
+    trap 'stop_create_ap; exit 130' INT
+    trap 'stop_create_ap; exit 0' TERM
 }
 
 start_hotspot() {
@@ -442,7 +688,7 @@ start_hotspot() {
 
     local escaped_if
     escaped_if=$(escape_regex "$INTERFACE")
-    if pgrep -f "create_ap.*$escaped_if" >/dev/null; then
+    if pgrep -f "create_ap.*[[:space:]]${escaped_if}([[:space:]]|$)" >/dev/null; then
         log "WARN" "create_ap is already running on $INTERFACE (started outside Fiero?). Not touching it."
         log "WARN" "Stop it first, e.g.: sudo create_ap --stop $INTERFACE"
         set_state "ERROR" "Hotspot not started: another hotspot is already running on $INTERFACE"
@@ -451,11 +697,12 @@ start_hotspot() {
 
     ensure_run_dir
     rm -f "$STOP_FLAG"
+    # A snapshot from an earlier run describes a machine state that no longer
+    # exists; never let it be applied to this one.
+    discard_snapshot
 
     # trap fires on normal exit and on SIGINT/SIGTERM; cleanup is idempotent
-    trap cleanup EXIT
-    trap 'exit 130' INT
-    trap 'exit 0' TERM
+    set_daemon_traps
 
     log "INFO" "Starting hotspot process..."
 
@@ -492,7 +739,7 @@ start_hotspot() {
     set_state "LIVE" "Hotspot is live! SSID: $SSID"
 
     monitor_hotspot
-    exit 0
+    exit $?
 }
 
 stop_hotspot() {
@@ -500,6 +747,7 @@ stop_hotspot() {
         log "ERR" "Stopping the hotspot requires root. Run: sudo fiero-hotspot stop"
         exit 1
     fi
+    set_client_traps
     load_config
 
     # Run by hand while systemd owns the hotspot: let systemd stop it, so
@@ -507,7 +755,10 @@ stop_hotspot() {
     # started by systemd, including ExecStop=.)
     if [ -z "${INVOCATION_ID:-}" ] && systemctl is-active --quiet fiero-hotspot.service 2>/dev/null; then
         log "INFO" "Stopping fiero-hotspot.service..."
-        exec systemctl stop fiero-hotspot.service
+        if systemctl stop fiero-hotspot.service; then
+            exit 0
+        fi
+        log "WARN" "systemctl stop failed. Falling back to direct process teardown."
     fi
 
     ensure_run_dir
@@ -643,6 +894,7 @@ clients_hotspot() {
         if [[ "$line" =~ $station_re ]]; then
             current_mac="${BASH_REMATCH[1]}"
         elif [[ "$line" =~ $signal_re ]]; then
+            [ -n "$current_mac" ] || continue
             local signal="${BASH_REMATCH[1]}"
             local ip="${mac_to_ip[$current_mac]:--}"
             local host="${mac_to_host[$current_mac]:--}"
@@ -658,7 +910,11 @@ update_auto_prompt() {
     else
         echo "AUTO_PROMPT='${val}'" >>"$CONFIG_FILE"
     fi
-    chown root:"$TARGET_USER" "$CONFIG_FILE" 2>/dev/null || true
+    local target="${TARGET_USER:-${SUDO_USER:-root}}"
+    chown root:"$target" "$CONFIG_FILE" 2>/dev/null || {
+        log "ERR" "Failed to set owner on $CONFIG_FILE to root:$target."
+        exit 1
+    }
     chmod 640 "$CONFIG_FILE" 2>/dev/null || true
 }
 

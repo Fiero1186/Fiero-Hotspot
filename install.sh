@@ -203,7 +203,7 @@ if [ "$KEEP_CONFIG" -eq 0 ]; then
 
     if [ -n "$PHY" ]; then
         # Grab all channel lines, allow for decimal outputs (.0 MHz), exclude restricted flags, extract the channel number, and join with commas
-        SUPPORTED_CHANNELS=$(iw phy "$PHY" info | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -vE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
+        SUPPORTED_CHANNELS=$(iw phy "$PHY" info | grep -E '\* [0-9]+(\.[0-9]+)? MHz \[[0-9]+\]' | grep -viE '(disabled|no IR|radar detection)' | awk -F'[][]' '{print $2}' | paste -sd, -)
     fi
 
     if [ -z "$SUPPORTED_CHANNELS" ]; then
